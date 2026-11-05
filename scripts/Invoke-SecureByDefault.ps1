@@ -365,7 +365,7 @@ function Step-BreakGlass {
     try {
         $words = 'emergency', 'break', 'breakglass', 'glass', 'bg'
         $q = (($words | ForEach-Object { "`"displayName:$_`" OR `"userPrincipalName:$_`"" }) -join ' OR ')
-        $res = Invoke-MgGraphRequest -Method GET -Uri ('https://graph.microsoft.com/v1.0/users?$count=true&$top=100&$select=displayName,userPrincipalName&$search=' + [uri]::EscapeDataString($q)) -Headers @{ ConsistencyLevel = 'eventual' }
+        $res = Invoke-MgGraphRequest -Method GET -Uri ('https://graph.microsoft.com/v1.0/users?$count=true&$top=100&$select=id,displayName,userPrincipalName,onPremisesSyncEnabled&$search=' + [uri]::EscapeDataString($q)) -Headers @{ ConsistencyLevel = 'eventual' }
         $found = @($res.value | Where-Object { $_.userPrincipalName.ToLower() -notin $refUpns })
     }
     catch { Write-Warning "Could not search for existing emergency accounts: $($_.Exception.Message)" }
@@ -380,6 +380,30 @@ function Step-BreakGlass {
             Write-Host '   No existing accounts named emergency / break / breakglass / bg were found. This only means none exist under those names - please double-check in Entra ID first.' -ForegroundColor Yellow
         }
     }
+    $gaId = '62e90394-69f5-4237-9190-012177145e10'
+    foreach ($e in $found) {
+        $who = $e.userPrincipalName
+        try {
+            Add-Result 'BreakGlass' "Existing account $who - cloud-only" $(if ($e.onPremisesSyncEnabled) { 'Synced from on-premises' } else { 'Cloud-only' }) 'Cloud-only' $(if ($e.onPremisesSyncEnabled) { 'Drift' } else { 'Compliant' }) $link 'Break-glass accounts must be cloud-only so they still work when on-premises AD or sync is down.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+            $ga = @((Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($e.id)' and roleDefinitionId eq '$gaId'").value)
+            Add-Result 'BreakGlass' "Existing account $who - permanent Global Administrator" $(if ($ga) { 'Assigned permanently' } else { 'No permanent assignment found' }) 'Permanent (active) Global Administrator' $(if ($ga) { 'Compliant' } else { 'Drift' }) $link 'Break-glass accounts need a permanent, active Global Administrator assignment (not eligible/PIM-only, and not only through a group), so they work when other systems fail.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+            $grps = @((Graph GET "https://graph.microsoft.com/v1.0/users/$($e.id)/memberOf/microsoft.graph.group?`$select=id,displayName,securityEnabled").value | Where-Object { $_.securityEnabled })
+            Add-Result 'BreakGlass' "Existing account $who - member of a security group" $(if ($grps) { ($grps.displayName -join ', ') } else { 'Not in any security group' }) 'Member of a dedicated security group' $(if ($grps) { 'Compliant' } else { 'Drift' }) $link 'Put the break-glass accounts in a dedicated security group so you can exclude them from Conditional Access and protect them as one set.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+            $inAu = $false
+            foreach ($gr in $grps) {
+                if (@((Graph GET "https://graph.microsoft.com/v1.0/groups/$($gr.id)/memberOf/microsoft.graph.administrativeUnit?`$select=id,isMemberManagementRestricted").value | Where-Object { $_.isMemberManagementRestricted }).Count) { $inAu = $true }
+            }
+            Add-Result 'BreakGlass' "Existing account $who - group in a restricted management administrative unit" $(if ($inAu) { 'Yes' } else { 'No' }) 'Yes' $(if ($inAu) { 'Compliant' } else { 'Drift' }) $link 'The security group should be inside a restricted management administrative unit (RMAU) so only the trusted admins you assign to it can change the group or its accounts.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        }
+        catch { Write-Warning "Could not fully check existing account ${who}: $($_.Exception.Message)" }
+    }
+    try {
+        $gw = 'emergency', 'break', 'breakglass', 'glass', 'bg'
+        $gq = (($gw | ForEach-Object { "`"displayName:$_`"" }) -join ' OR ')
+        $fg = @((Invoke-MgGraphRequest -Method GET -Uri ('https://graph.microsoft.com/v1.0/groups?$count=true&$top=50&$select=displayName,securityEnabled&$search=' + [uri]::EscapeDataString($gq)) -Headers @{ ConsistencyLevel = 'eventual' }).value | Where-Object { $_.securityEnabled -and $_.displayName -ne $BreakGlassGroupName })
+        if ($fg) { Add-Result 'BreakGlass' 'Existing emergency security groups (name contains emergency, break, breakglass or bg)' "Found: $(($fg.displayName) -join ', ')" 'Verify this is the break-glass group and is in an RMAU' Info 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/GroupsManagementMenuBlade/~/AllGroups' 'These security groups look like break-glass groups. Check that they contain only the break-glass accounts, are excluded from Conditional Access and sit inside a restricted management administrative unit. Avoid obvious names like breakglass or emergency - use generic names.' $BreakGlassPdf 'Break-glass best practices (PDF)' }
+    }
+    catch { Write-Warning "Could not search for existing emergency groups: $($_.Exception.Message)" }
     $users = @(foreach ($n in $script:Reference.breakGlass.accountNames) {
         $upn = "$n@$initialDomain"
         $u = (Graph GET "https://graph.microsoft.com/v1.0/users?`$filter=userPrincipalName eq '$upn'").value | Select-Object -First 1
