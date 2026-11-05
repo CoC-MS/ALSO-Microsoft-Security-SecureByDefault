@@ -159,6 +159,7 @@ function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     Write-Host "  Why    : $Why"
     Write-Host "  Access : $Access"
     Write-Host '  A browser window opens. Sign in with your Global Administrator account.'
+    if ($script:signInNo -gt 1) { Write-Host '  If the browser then says "This page can''t be reached", the sign-in itself is done: close that tab and wait for this window to continue.' -ForegroundColor DarkGray }
 }
 
 $graphWhy = if ($Mode -eq 'Enforce') {
@@ -168,7 +169,7 @@ $graphWhy = if ($Mode -eq 'Enforce') {
 }
 Show-SignIn 'Microsoft Graph (Entra ID, Intune, SharePoint settings)' $graphWhy ($graphScopes -join ', ')
 Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
-function Get-BrowserToken([string[]]$Scopes) {
+function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false) {
     $clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e'   # Microsoft Graph Command Line Tools
     $port = Get-Random -Minimum 49200 -Maximum 65000
     $redirect = "http://localhost:$port"
@@ -205,7 +206,7 @@ function Get-BrowserToken([string[]]$Scopes) {
                 if ($cand -and ($cand['code'] -or $cand['error'])) {
                     $q = $cand
                     $ok = [bool]$q['code']
-                    $msg = if ($ok) { 'Signed in. You can close this tab and return to PowerShell.' } else { 'Sign-in failed. Return to PowerShell for details.' }
+                    $msg = if ($ok -and $Last) { 'Signed in. You can close this tab and return to PowerShell.' } elseif ($ok) { 'Signed in. You can close this tab. The next sign-in opens automatically.' } else { 'Sign-in failed. Return to PowerShell for details.' }
                     $body = [Text.Encoding]::UTF8.GetBytes("<html><head><title>ALSO Secure by Default</title></head><body style='font-family:Segoe UI;margin:3em'><h2>ALSO Secure by Default</h2><p>$msg</p></body></html>")
                     $hdr = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
                     $stream.Write($hdr, 0, $hdr.Length); $stream.Write($body, 0, $body.Length); $stream.Flush()
@@ -230,7 +231,7 @@ function Get-BrowserToken([string[]]$Scopes) {
 
 Write-Host '  Opening your default browser for sign-in...' -ForegroundColor DarkGray
 try {
-    $token = Get-BrowserToken $graphScopes
+    $token = Get-BrowserToken $graphScopes (-not ($needsExo -or $needsPurview))
     Connect-MgGraph -AccessToken (ConvertTo-SecureString $token -AsPlainText -Force) -NoWelcome -ErrorAction Stop
 }
 catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message)" }
@@ -1182,14 +1183,17 @@ function Step-Purview {
             else { & $addRow $Grp $Setting 'Missing' 'Matches the ALSO baseline' Drift "$Why This item is not in your tenant yet. Enforce mode can deploy it." $Lnk $true }
         }
         $g1 = 'Tenant settings'
-        try {
-            $a = Get-AdminAuditLogConfig
-            & $addRow $g1 'Unified audit log' (& $yn ($a.UnifiedAuditLogIngestionEnabled -eq $true)) 'On' $(if ($a.UnifiedAuditLogIngestionEnabled -eq $true) { 'Compliant' } else { 'Drift' }) 'Purview and Defender rely on the audit log for investigations, DLP reports and Copilot logging. The Audit log step of this script turns it on.' 'https://purview.microsoft.com/audit/auditsearch' $false
+        $WarningPreference = 'SilentlyContinue'
+        $au = $script:Results | Where-Object { $_.Step -eq 'AuditLog' } | Select-Object -Last 1
+        $auLink = 'https://purview.microsoft.com/audit/auditsearch'
+        $auWhy = 'Purview and Defender rely on the audit log for investigations, DLP reports and Copilot logging. It is checked and turned on by the "Unified audit log" step, which reads it from Exchange Online.'
+        if ($au) {
+            $auOn = $au.Status -in 'Compliant', 'Fixed'
+            & $addRow $g1 'Unified audit log' $(if ($auOn) { 'On' } else { 'Off' }) 'On' $(if ($auOn) { 'Compliant' } else { 'Drift' }) $auWhy $auLink $false
         }
-        catch { & $addRow $g1 'Unified audit log' "Could not be read: $($_.Exception.Message)" 'On' Error $null '' 'https://purview.microsoft.com/audit/auditsearch' $false }
-        & $addRow $g1 'Sensitivity labels for PDF files and SharePoint/OneDrive labeling' 'Cannot be read automatically' 'Turned on' Manual 'These are SharePoint Online tenant settings. Check in Purview under Information protection > Labels (the toolkit''s tenant-settings module sets them, and it needs a SharePoint admin sign-in).' $lbl $false
+        else { & $addRow $g1 'Unified audit log' 'Checked by the Unified audit log step' 'On' Info 'Add the AuditLog step to read and enable it.' $auLink $false }        & $addRow $g1 'Sensitivity labels for PDF files and SharePoint/OneDrive labeling' 'Cannot be read without a separate SharePoint admin sign-in' 'Turned on' Manual 'These are SharePoint Online tenant settings (AIP integration and PDF labeling). New tenants have them on already; for existing tenants confirm in the SharePoint admin center under Settings > Sensitivity labels, or run the toolkit''s Setup-TenantSettings.ps1.' $lbl $false
 
-        $g2 = 'Sensitivity labels'
+        $g2 = 'ALSO baseline (suggested): Sensitivity labels'; $g2x = 'Your existing tenant: Sensitivity labels'
         $labels = @()
         try { $labels = @(Get-Label -ErrorAction Stop) } catch { & $addRow $g2 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'Make sure the signed-in account is Global Administrator or Compliance Administrator.' $lbl $false }
         $find = { param($c, $parent)
@@ -1208,11 +1212,15 @@ function Step-Purview {
                 }
             }
             foreach ($x in @($labels | Where-Object { -not $_.ParentId -and $_.DisplayName -notin $baseNames })) {
-                & $addRow $g2 "Your own label: $($x.DisplayName)" 'Not part of the ALSO baseline' 'Reviewed' Info 'Check that it does not overlap with the ALSO labels, because two label sets confuse users.' $lbl $false
+                $sim = @($config.Labels | Where-Object { $x.DisplayName -like "*$($_.DisplayName)*" -or $_.DisplayName -like "*$($x.DisplayName)*" } | ForEach-Object { $_.DisplayName })
+                $subN = @($labels | Where-Object { "$($_.ParentId)" -eq "$($x.Guid)" }).Count
+                $wasEnc = if ($null -ne $x.EncryptionEnabled) { "Encryption: $(& $yn $x.EncryptionEnabled)." } else { '' }
+                if ($sim.Count) { & $addRow $g2x "Label: $($x.DisplayName)" "Possible duplicate of the ALSO label '$($sim -join ', ')'" 'Reviewed by you' Manual "This label exists in your tenant but is not the ALSO label. $wasEnc It has $subN sub-label(s). Two label sets with similar names confuse users: decide whether to keep yours, rename it or retire it before deploying the ALSO labels." $lbl $false }
+                else { & $addRow $g2x "Label: $($x.DisplayName)" 'Exists, not part of the ALSO baseline' 'Reviewed by you' Info "Your own label. $wasEnc It has $subN sub-label(s). It is never changed by this script." $lbl $false }
             }
         }
 
-        $g3 = 'Label policy (which labels users see)'
+        $g3 = 'ALSO baseline (suggested): Label policy'; $g3x = 'Your existing tenant: Label policies'
         try {
             $lps = @(Get-LabelPolicy -ErrorAction Stop)
             $c = $config.LabelPolicy
@@ -1230,18 +1238,23 @@ function Step-Purview {
                 if ($lp.Enabled -eq $false) { $d += 'the policy is switched off' }
             }
             & $emit $g3 "Label policy: $($c.Name)" ([bool]$lp) $d 'Publishes the four baseline labels, requires a label on documents and sets the default labels.' $lpL $null
-            foreach ($o in @($lps | Where-Object { $_.Name -ne $c.Name })) { & $addRow $g3 "Your own label policy: $($o.Name)" 'Not part of the ALSO baseline' 'Reviewed' Info 'Several label policies can give users different labels or defaults. Check that it does not conflict with the baseline.' $lpL $false }
+            foreach ($o in @($lps | Where-Object { $_.Name -ne $c.Name })) {
+                $have = @($o.Labels | ForEach-Object { "$_" })
+                $shared = @($c.PublishedLabels | ForEach-Object { $resolved[$_] } | Where-Object { $_ -and ($have -contains "$($_.Guid)" -or $have -contains "$($_.Name)" -or $have -contains "$($_.DisplayName)") } | ForEach-Object { $_.DisplayName })
+                if ($shared.Count) { & $addRow $g3x "Label policy: $($o.Name)" "Possible overlap: also publishes $($shared -join ', ')" 'Reviewed by you' Manual "This policy publishes $($have.Count) label(s), including ALSO baseline labels. Users can get conflicting defaults or required-labeling rules when two policies target the same labels. Check which one should apply." $lpL $false }
+                else { & $addRow $g3x "Label policy: $($o.Name)" "Publishes $($have.Count) label(s)" 'Reviewed by you' Info 'Your own label policy. It does not publish ALSO baseline labels. It is never changed by this script.' $lpL $false }
+            }
         }
         catch { & $addRow $g3 'Label policy' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $lpL $false }
 
         $dlp = @(); $rules = @()
         try { $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop); $rules = @(Get-DlpComplianceRule -ErrorAction Stop) }
-        catch { & $addRow 'Data loss prevention' 'Data loss prevention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $dlpL $false }
+        catch { & $addRow $g7 'Data loss prevention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $dlpL $false }
         $rulesOf = { param($n) $rules | Where-Object { "$($_.ParentPolicyName)" -eq $n -or "$($_.Policy)" -eq $n } }
         $sitJson = { param($r) if ($r) { ($r | ForEach-Object { $_.ContentContainsSensitiveInformation } | ConvertTo-Json -Depth 12 -Compress) } else { '' } }
         $e5skip = { param($g, $n, $why) & $addRow $g $n 'Not licensed' 'Requires Microsoft 365 E5, E7 or the Purview suite' Skipped $why $dlpL $false }
 
-        $g4 = 'DLP: protect labelled content (one row per policy)'
+        $g4 = 'ALSO baseline (suggested): DLP - protect labelled content'
         foreach ($c in $config.DlpPolicies) {
             if ($c.Name -like 'E5-PS*' -and $tier -ne 'Full') { & $e5skip $g4 $c.Name 'Endpoint DLP needs Microsoft 365 E5, E7 or the Purview suite.'; continue }
             $p = $dlp | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
@@ -1261,7 +1274,7 @@ function Step-Purview {
             & $emit $g4 $c.Name ([bool]$p) $d "$($c.Comment)$cur" $dlpL $null
         }
 
-        $g5 = 'DLP: detect sensitive data types (one row per policy)'
+        $g5 = 'ALSO baseline (suggested): DLP - detect sensitive data types'
         $sitNames = @{}
         foreach ($c in $config.SitDlpPolicies) {
             $p = $dlp | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
@@ -1289,7 +1302,7 @@ function Step-Purview {
             & $emit $g5 $c.Name ([bool]$p) $d "$($c.Comment -replace ' Created by .*$', '')$cur" $dlpL $equiv
         }
 
-        $g6 = 'AI protection'
+        $g6 = 'ALSO baseline (suggested): AI protection'
         foreach ($c in $config.AIGovernance.DlpPolicies) {
             if ($tier -ne 'Full') { & $e5skip $g6 $c.Name 'Blocking Copilot from labelled content needs Microsoft 365 E5, E7 or the Purview suite.'; continue }
             $p = $dlp | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
@@ -1298,15 +1311,17 @@ function Step-Purview {
             & $emit $g6 $c.Name ([bool]$p) $d $c.Comment $dlpL $null
         }
 
-        $g7 = 'Your own DLP policies (not part of the ALSO baseline)'
+        $g7 = 'Your existing tenant: DLP policies'
         foreach ($o in @($dlp | Where-Object { $_.Name -notlike 'BP-ALSO*' -and $_.Name -notlike 'E5-PS-ALSO*' })) {
             $j = & $sitJson (& $rulesOf $o.Name)
             $same = @($config.SitDlpPolicies | Where-Object { $j -and $sitNames[$_.Name].Count -and -not @($sitNames[$_.Name] | Where-Object { $j -notmatch [regex]::Escape($_) }).Count } | ForEach-Object { $_.Name })
-            $txt = if ($same) { "It covers the same sensitive data as the ALSO policy: $($same -join '; '). Users may be warned twice if both are on." } else { 'No overlap with the ALSO policies.' }
-            & $addRow $g7 "Your policy: $($o.Name)" "$(& $modeTxt $o)" 'Reviewed' Info $txt $dlpL $false
+            $where = @(if (@($o.ExchangeLocation).Count) { 'Exchange' }; if (@($o.SharePointLocation).Count) { 'SharePoint' }; if (@($o.OneDriveLocation).Count) { 'OneDrive' }; if (@($o.EndpointDlpLocation).Count) { 'Endpoint devices' }; if (@($o.TeamsLocation).Count) { 'Teams' }) -join ', '
+            $facts = "Mode: $(& $modeTxt $o)." + $(if ($where) { " Applies to: $where." } else { '' })
+            if ($same) { & $addRow $g7 "DLP policy: $($o.Name)" "Possible duplicate of the ALSO policy '$($same -join '; ')'" 'Reviewed by you' Manual "$facts It looks for the same sensitive data as the ALSO baseline policy, so users may be warned or blocked twice if both are on. Compare the two and keep the one that fits your organization." $dlpL $false }
+            else { & $addRow $g7 "DLP policy: $($o.Name)" "Exists, no overlap with ALSO" 'Reviewed by you' Info "$facts Your own policy. It is never changed by this script." $dlpL $false }
         }
 
-        $g8 = 'Retention'
+        $g8 = 'ALSO baseline (suggested): Retention (optional)'; $g8x = 'Your existing tenant: Retention policies'
         try {
             $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop)
             $c = $config.Retention
@@ -1319,11 +1334,11 @@ function Step-Purview {
                 & $emit $g8 "Optional: $($c.Name)" $true $d 'Keeps Exchange mail for seven years and then deletes it. Optional, only after legal review.' $retL $null
             }
             else { & $addRow $g8 "Optional: $($c.Name)" 'Not deployed' 'Only after legal review' Info 'Keeps Exchange mail for seven years and then deletes it. It is optional and must be approved by legal and compliance first. Enforce mode asks separately.' $retL $false }
-            foreach ($o in @($ret | Where-Object { $_.Name -ne $c.Name })) { & $addRow $g8 "Your retention policy: $($o.Name)" "$(if ($o.Enabled -eq $false) { 'Off' } else { 'On' })" 'Reviewed' Info 'Retention decides how long data is kept or deleted. Make sure it matches your legal requirements.' $retL $false }
+            foreach ($o in @($ret | Where-Object { $_.Name -ne $c.Name })) { & $addRow $g8x "Your retention policy: $($o.Name)" "$(if ($o.Enabled -eq $false) { 'Off' } else { 'On' })" 'Reviewed' Info 'Retention decides how long data is kept or deleted. Make sure it matches your legal requirements.' $retL $false }
         }
         catch { & $addRow $g8 'Retention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $retL $false }
 
-        $g9 = 'Other Purview protections (not part of the baseline)'
+        $g9 = 'Your existing tenant: Other Purview protections'
         $extras = @(
             @{ N = 'Auto-labeling policies'; C = { @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop) }; D = 'Auto-labeling applies labels to content that contains sensitive information, without relying on users.'; L = 'https://purview.microsoft.com/informationprotection/autolabeling' }
             @{ N = 'Insider risk management policies'; C = { @(Get-InsiderRiskPolicy -ErrorAction Stop) }; D = 'Detects risky activity such as data leaks by departing employees. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/insiderriskmanagement' }
@@ -1333,7 +1348,8 @@ function Step-Purview {
             try { $cc = & $x.C; & $addRow $g9 $x.N $(if ($cc.Count) { "$($cc.Count): $(($cc | ForEach-Object { $_.Name }) -join '; ')" } else { 'None' }) 'Considered for your organization' Info $x.D $x.L $false }
             catch { & $addRow $g9 $x.N 'Not available in this tenant or not readable' 'Considered for your organization' Info $x.D $x.L $false }
         }
-        $rows
+        $i = 0
+        @($rows | ForEach-Object { $k = if ($_.Group -like 'Your existing*') { 2 } else { 1 }; [pscustomobject]@{ K = $k; I = $i++; R = $_ } } | Sort-Object K, I | ForEach-Object { $_.R })
     }
 
     $first = @(& $check)
