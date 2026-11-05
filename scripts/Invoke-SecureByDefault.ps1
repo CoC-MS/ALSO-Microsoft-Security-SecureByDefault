@@ -575,7 +575,7 @@ function Step-BreakGlass {
             if (Confirm-Change "Create break-glass account $upn") {
                 $pw = New-StrongPassword
                 $u = Graph POST 'https://graph.microsoft.com/v1.0/users' @{
-                    accountEnabled = $true; displayName = $n; mailNickname = $n; userPrincipalName = $upn
+                    accountEnabled = $true; displayName = $n; mailNickname = $n; userPrincipalName = $upn; department = 'ALSO Secure by Default'
                     passwordPolicies = 'DisablePasswordExpiration'; passwordProfile = @{ password = $pw; forceChangePasswordNextSignIn = $false }
                 }
                 Write-Host "   >>> ONE-TIME PASSWORD for ${upn}: $pw  (store offline now; not shown again)" -ForegroundColor Black -BackgroundColor Yellow
@@ -1928,21 +1928,30 @@ function Step-WipeBreakGlass {    Write-Step 'Remove emergency access accounts' 
     Write-Host '   WARNING: make sure another Global Administrator can sign in before you remove the emergency access accounts.' -ForegroundColor Yellow
     $items = @()
     $q = [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'")
-    $g = Find-GroupByName $BreakGlassGroupName
-    if ($g) { $items += [pscustomobject]@{ Name = "Security group: $($g.displayName)"; Uri = "https://graph.microsoft.com/v1.0/groups/$($g.id)"; Id = $g.id; User = $false } }
-    $seen = @{}
-    $add = { param($u) if ($u.id -and -not $seen[$u.id]) { $seen[$u.id] = 1; $script:wipeItems += [pscustomobject]@{ Name = "Account: $($u.userPrincipalName)"; Uri = "https://graph.microsoft.com/v1.0/users/$($u.id)"; Id = $u.id; User = $true } } }
-    $script:wipeItems = $items
-    foreach ($n in $script:Reference.breakGlass.accountNames) {
-        try { & $add (Graph GET "https://graph.microsoft.com/v1.0/users/$("$n@$initialDomain")?`$select=id,userPrincipalName") } catch { }
+    $g = $null
+    $gf = Find-GroupByName $BreakGlassGroupName
+    if ($gf) {
+        $gd = Graph GET "https://graph.microsoft.com/v1.0/groups/$($gf.id)?`$select=id,displayName,description"
+        if ($gd.description -eq 'Protected service accounts') { $g = $gd; $items += [pscustomobject]@{ Name = "Security group: $($g.displayName)"; Uri = "https://graph.microsoft.com/v1.0/groups/$($g.id)"; Id = $g.id; User = $false } }
+        else { Write-Host "   Group '$($gd.displayName)' was not created by this script (different description), so it is left alone." -ForegroundColor DarkGray }
     }
-    if ($g) { try { foreach ($m in @(Get-AllPages "https://graph.microsoft.com/v1.0/groups/$($g.id)/members/microsoft.graph.user?`$select=id,userPrincipalName")) { & $add $m } } catch { } }
-    $items = @($script:wipeItems)
+    $gMembers = @()
+    if ($g) { try { $gMembers = @(Get-AllPages "https://graph.microsoft.com/v1.0/groups/$($g.id)/members/microsoft.graph.user?`$select=id" | ForEach-Object { $_.id }) } catch { } }
+    foreach ($n in $script:Reference.breakGlass.accountNames) {
+        try {
+            $u = Graph GET "https://graph.microsoft.com/v1.0/users/$("$n@$initialDomain")?`$select=id,userPrincipalName,department"
+            if ($u.id -and ($u.department -eq 'ALSO Secure by Default' -or $u.id -in $gMembers -or $u.displayName -eq $n)) { $items += [pscustomobject]@{ Name = "Account: $($u.userPrincipalName)"; Uri = "https://graph.microsoft.com/v1.0/users/$($u.id)"; Id = $u.id; User = $true } }
+            elseif ($u.id) { Write-Host "   Account $($u.userPrincipalName) was not created by this script, so it is left alone." -ForegroundColor DarkGray }
+        } catch { }
+    }
     Remove-Items 'BreakGlass' 'emergency access accounts, group and restricted management unit' $items { param($x) $x.Name } {
         param($x)
+        if ($x.User) {
+            foreach ($ra in @((Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($x.Id)'").value)) { try { Graph DELETE "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments/$($ra.id)" | Out-Null } catch { } }
+        }
         Graph DELETE $x.Uri | Out-Null
         if ($x.User) { try { Graph DELETE "https://graph.microsoft.com/v1.0/directory/deletedItems/$($x.Id)" | Out-Null } catch { } }
-    } $link 'Accounts are deleted permanently so the same names can be created again. The group is removed first, then the accounts. Accounts are found by name and as members of the group, so renamed accounts are included.'
+    } $link 'Accounts are deleted permanently so the same names can be created again. The group is removed first, then the accounts. Only the accounts and group that this script created are removed (matched by the exact names, the marker or the group).'
 }
 
 function Invoke-Wipe {
