@@ -140,7 +140,10 @@ function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
 
 Show-SignIn 'Microsoft Graph (Entra ID, Intune, tenant settings)' 'Reads and, in Enforce mode, changes tenant-wide settings.' ($graphScopes -join ', ')
 Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
-try { Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction SilentlyContinue } catch { }
+$optParams = (Get-Command Set-MgGraphOption).Parameters.Keys
+if ($optParams -contains 'DisableLoginByWAM') { Set-MgGraphOption -DisableLoginByWAM $true }
+elseif ($optParams -contains 'EnableLoginByWAM') { Set-MgGraphOption -EnableLoginByWAM $false }
+else { Write-Warning 'This Microsoft.Graph.Authentication version cannot disable the Windows account dialog. Run: Update-Module Microsoft.Graph.Authentication' }
 try { Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop }
 catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message). Close any stuck sign-in windows and run the script again." }
 Write-Host '  Signed in to Microsoft Graph.' -ForegroundColor Green
