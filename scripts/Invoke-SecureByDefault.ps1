@@ -159,7 +159,6 @@ function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     Write-Host "  Why    : $Why"
     Write-Host "  Access : $Access"
     Write-Host '  A browser window opens. Sign in with your Global Administrator account.'
-    if ($script:signInNo -gt 1) { Write-Host '  If the browser then says "This page can''t be reached", the sign-in itself is done: close that tab and wait for this window to continue.' -ForegroundColor DarkGray }
 }
 
 $graphWhy = if ($Mode -eq 'Enforce') {
@@ -169,8 +168,7 @@ $graphWhy = if ($Mode -eq 'Enforce') {
 }
 Show-SignIn 'Microsoft Graph (Entra ID, Intune, SharePoint settings)' $graphWhy ($graphScopes -join ', ')
 Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
-function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false) {
-    $clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e'   # Microsoft Graph Command Line Tools
+function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e', [string]$Resource = 'https://graph.microsoft.com') {
     $port = Get-Random -Minimum 49200 -Maximum 65000
     $redirect = "http://localhost:$port"
     $b64 = { param([byte[]]$b) [Convert]::ToBase64String($b).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
@@ -179,7 +177,7 @@ function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false) {
     $verifier = & $rand 48
     $challenge = & $b64 ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::ASCII.GetBytes($verifier)))
     $state = & $rand 16
-    $scope = ($Scopes | ForEach-Object { "https://graph.microsoft.com/$_" }) -join ' '
+    $scope = ($Scopes | ForEach-Object { "$Resource/$_" }) -join ' '
     $auth = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?client_id=$clientId&response_type=code&response_mode=query" +
         "&redirect_uri=$([uri]::EscapeDataString($redirect))&scope=$([uri]::EscapeDataString($scope))&state=$state&code_challenge=$challenge&code_challenge_method=S256&prompt=select_account"
     $listeners = @()
@@ -251,18 +249,32 @@ if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.
 if ($needsExo) {
     Show-SignIn 'Exchange Online / Security & Compliance' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: turns on the unified audit log and enables Defender for Office 365 preset protection rules, after you approve each change.' } else { 'DISCOVER mode: only READS whether the unified audit log is on and whether Defender for Office 365 preset protection rules are enabled. Nothing is changed.' }) 'Exchange Online administration (Global Administrator role)'
     Initialize-Module ExchangeOnlineManagement
-    try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
-    catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
+    $exOk = $false
+    try {
+        $exTok = Get-BrowserToken @('.default') (-not $needsPurview) 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://outlook.office365.com'
+        Connect-ExchangeOnline -AccessToken $exTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $exOk = $true
+    }
+    catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
+    if (-not $exOk) {
+        try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
+        catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
+    }
     Write-Host '  Signed in to Exchange Online.' -ForegroundColor Green
 }
 if ($needsPurview) {
     Show-SignIn 'Microsoft Purview (Security & Compliance)' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: reads your sensitivity labels, label policy, DLP and retention policies, compares them with the ALSO Purview baseline and, after you approve, creates or updates the baseline items (DLP policies start in simulation mode).' } else { 'DISCOVER mode: only READS sensitivity labels, label policies, DLP and retention policies. Nothing is changed.' }) 'Security & Compliance administration (Global Administrator role)'
     Initialize-Module ExchangeOnlineManagement
-    try { Connect-IPPSSession -ShowBanner:$false -DisableWAM -ErrorAction Stop }
+    $ippsOk = $false
+    try {
+        $ippsTok = Get-BrowserToken @('.default') $true 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'
+        Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true
+    }
+    catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
+    if (-not $ippsOk) { try { Connect-IPPSSession -ShowBanner:$false -DisableWAM -ErrorAction Stop }
     catch {
         if ($_.Exception.Message -match 'parameter') { try { Connect-IPPSSession -ShowBanner:$false -ErrorAction Stop } catch { throw "Purview sign-in failed: $($_.Exception.Message)" } }
         else { throw "Purview sign-in failed: $($_.Exception.Message)" }
-    }
+    } }
     Write-Host '  Signed in to Microsoft Purview.' -ForegroundColor Green
 }
 #endregion
@@ -936,7 +948,8 @@ function Step-ConditionalAccess {
     foreach ($e in $existing) { $k = Get-CaFingerprint $e $true; if (-not $strict.ContainsKey($k)) { $strict[$k] = @() }; $strict[$k] += $e }
     $dups = @($strict.Values | Where-Object { $_.Count -gt 1 })
     if (-not $dups.Count) { Add-Result 'ConditionalAccess' 'Policies with identical settings' 'None found' 'No duplicates' Compliant $link 'Two policies with the same users, apps and controls do the same job twice and make troubleshooting harder.' $doc $docText }
-    foreach ($d in $dups) { Add-Result 'ConditionalAccess' "Duplicate policies: $(($d | ForEach-Object { $_.displayName }) -join '  |  ')" "$($d.Count) policies with identical settings" 'One policy' Drift $link 'These policies target the same users and apps and require the same controls. Keep one and remove or merge the others, otherwise changes have to be made twice and the result is hard to explain.' $doc $docText }
+    $dn = 0
+foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group ${dn}: $($d.Count) policies do the same thing" "Identical settings in:`n$(($d | ForEach-Object { '- ' + $_.displayName }) -join "`n")" 'One policy' Drift $link 'These policies target the same users and apps and require the same controls. Keep one and remove or merge the others, otherwise changes have to be made twice and the result is hard to explain.' $doc $docText }
 
     Set-Group 'Break-glass protection'
     Invoke-Part 'ConditionalAccess' 'Break-glass group excluded from policies' {
@@ -1165,7 +1178,7 @@ function Step-Purview {
     $yn = { param($v) if ($v) { 'On' } else { 'Off' } }
     $isTrue = { param($v) "$v" -match '^(true|1|yes)$' }
 
-    try { $tk = Get-PurviewToolkit; $cfgPath = Join-Path $tk 'Purview\Config\PurviewConfig.psd1'; $config = Import-PowerShellDataFile $cfgPath }
+    try { $tk = Get-PurviewToolkit 3>$null; $cfgPath = Join-Path $tk 'Purview\Config\PurviewConfig.psd1'; $config = Import-PowerShellDataFile $cfgPath }
     catch { Add-Result 'Purview' 'ALSO Purview baseline configuration' "Could not be downloaded: $($_.Exception.Message)" 'Downloaded from GitHub' Error $repo 'The script compares your tenant with the baseline file in ALSO''s Purview repository. Check your internet connection and that github.com is reachable.' $doc $docText; return }
     if (-not (Get-Command Get-Label -ErrorAction SilentlyContinue)) {
         Add-Result 'Purview' 'Purview connection' 'Signed in, but the Purview commands are not available' 'Commands such as Get-Label are available' Error 'https://purview.microsoft.com' 'The sign-in worked, but the Security & Compliance commands did not load. Close PowerShell, open a new PowerShell 7 window as administrator, and run the script again. If it persists, update the ExchangeOnlineManagement module (Update-Module ExchangeOnlineManagement).' $doc $docText
@@ -1215,7 +1228,7 @@ function Step-Purview {
                 $sim = @($config.Labels | Where-Object { $x.DisplayName -like "*$($_.DisplayName)*" -or $_.DisplayName -like "*$($x.DisplayName)*" } | ForEach-Object { $_.DisplayName })
                 $subN = @($labels | Where-Object { "$($_.ParentId)" -eq "$($x.Guid)" }).Count
                 $wasEnc = if ($null -ne $x.EncryptionEnabled) { "Encryption: $(& $yn $x.EncryptionEnabled)." } else { '' }
-                if ($sim.Count) { & $addRow $g2x "Label: $($x.DisplayName)" "Possible duplicate of the ALSO label '$($sim -join ', ')'" 'Reviewed by you' Manual "This label exists in your tenant but is not the ALSO label. $wasEnc It has $subN sub-label(s). Two label sets with similar names confuse users: decide whether to keep yours, rename it or retire it before deploying the ALSO labels." $lbl $false }
+                if ($sim.Count) { & $addRow $g2x "Label: $($x.DisplayName)" "Possible duplicate of the ALSO label:`n$(($sim | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "This label exists in your tenant but is not the ALSO label. $wasEnc It has $subN sub-label(s). Two label sets with similar names confuse users: decide whether to keep yours, rename it or retire it before deploying the ALSO labels." $lbl $false }
                 else { & $addRow $g2x "Label: $($x.DisplayName)" 'Exists, not part of the ALSO baseline' 'Reviewed by you' Info "Your own label. $wasEnc It has $subN sub-label(s). It is never changed by this script." $lbl $false }
             }
         }
@@ -1241,7 +1254,7 @@ function Step-Purview {
             foreach ($o in @($lps | Where-Object { $_.Name -ne $c.Name })) {
                 $have = @($o.Labels | ForEach-Object { "$_" })
                 $shared = @($c.PublishedLabels | ForEach-Object { $resolved[$_] } | Where-Object { $_ -and ($have -contains "$($_.Guid)" -or $have -contains "$($_.Name)" -or $have -contains "$($_.DisplayName)") } | ForEach-Object { $_.DisplayName })
-                if ($shared.Count) { & $addRow $g3x "Label policy: $($o.Name)" "Possible overlap: also publishes $($shared -join ', ')" 'Reviewed by you' Manual "This policy publishes $($have.Count) label(s), including ALSO baseline labels. Users can get conflicting defaults or required-labeling rules when two policies target the same labels. Check which one should apply." $lpL $false }
+                if ($shared.Count) { & $addRow $g3x "Label policy: $($o.Name)" "Possible overlap, also publishes:`n$(($shared | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "This policy publishes $($have.Count) label(s), including ALSO baseline labels. Users can get conflicting defaults or required-labeling rules when two policies target the same labels. Check which one should apply." $lpL $false }
                 else { & $addRow $g3x "Label policy: $($o.Name)" "Publishes $($have.Count) label(s)" 'Reviewed by you' Info 'Your own label policy. It does not publish ALSO baseline labels. It is never changed by this script.' $lpL $false }
             }
         }
@@ -1317,7 +1330,7 @@ function Step-Purview {
             $same = @($config.SitDlpPolicies | Where-Object { $j -and $sitNames[$_.Name].Count -and -not @($sitNames[$_.Name] | Where-Object { $j -notmatch [regex]::Escape($_) }).Count } | ForEach-Object { $_.Name })
             $where = @(if (@($o.ExchangeLocation).Count) { 'Exchange' }; if (@($o.SharePointLocation).Count) { 'SharePoint' }; if (@($o.OneDriveLocation).Count) { 'OneDrive' }; if (@($o.EndpointDlpLocation).Count) { 'Endpoint devices' }; if (@($o.TeamsLocation).Count) { 'Teams' }) -join ', '
             $facts = "Mode: $(& $modeTxt $o)." + $(if ($where) { " Applies to: $where." } else { '' })
-            if ($same) { & $addRow $g7 "DLP policy: $($o.Name)" "Possible duplicate of the ALSO policy '$($same -join '; ')'" 'Reviewed by you' Manual "$facts It looks for the same sensitive data as the ALSO baseline policy, so users may be warned or blocked twice if both are on. Compare the two and keep the one that fits your organization." $dlpL $false }
+            if ($same) { & $addRow $g7 "DLP policy: $($o.Name)" "Possible duplicate of the ALSO policy:`n$(($same | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "$facts It looks for the same sensitive data as the ALSO baseline policy, so users may be warned or blocked twice if both are on. Compare the two and keep the one that fits your organization." $dlpL $false }
             else { & $addRow $g7 "DLP policy: $($o.Name)" "Exists, no overlap with ALSO" 'Reviewed by you' Info "$facts Your own policy. It is never changed by this script." $dlpL $false }
         }
 
@@ -1352,7 +1365,7 @@ function Step-Purview {
         @($rows | ForEach-Object { $k = if ($_.Group -like 'Your existing*') { 2 } else { 1 }; [pscustomobject]@{ K = $k; I = $i++; R = $_ } } | Sort-Object K, I | ForEach-Object { $_.R })
     }
 
-    $first = @(& $check)
+    $first = @(& $check 3>$null)
     $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
     $final = $first
     $deployed = $false
@@ -1402,7 +1415,7 @@ function Step-Purview {
                 }
                 $deployed = $true
                 Write-Host '   Reading the tenant again to verify the result...' -ForegroundColor Cyan
-                $final = @(& $check)
+                $final = @(& $check 3>$null)
             }
         }
     }
@@ -1524,7 +1537,7 @@ main{max-width:1200px;margin:24px auto;padding:0 24px}
 section{background:#fff;border:1px solid #dde3ea;border-radius:10px;margin-bottom:20px;padding:6px 18px 14px}
 h2{font-size:1.15rem;display:flex;align-items:center;gap:10px}
 table{border-collapse:collapse;width:100%}th{text-align:left;font-size:.78rem;text-transform:uppercase;color:#5b6b7c;padding:6px 8px;border-bottom:2px solid #e6ebf0}
-td{padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:.9rem;word-break:break-word}td.st{white-space:nowrap}
+td{white-space:pre-line;padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:.9rem;word-break:break-word}td.st{white-space:nowrap}
 .why{margin-top:6px;font-size:.82rem;font-weight:400;color:#4a5a6a;line-height:1.45}a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
 .next{background:#fff;border:1px solid #dde3ea;border-left:5px solid #00757d;border-radius:10px;padding:8px 24px 22px;margin:28px 0}.next p{color:#5b6b7c;max-width:760px}.btn{display:inline-block;background:#0b5cab;color:#fff!important;padding:10px 20px;border-radius:8px;font-weight:600}.btn:hover{text-decoration:none;background:#094a8c}
 .grp td{background:#eef6f6;font-weight:600;color:#00575d;padding:8px;border-bottom:1px solid #d3e6e7}
