@@ -331,11 +331,20 @@ $script:SpoToken = $null
 if ($needsSpo) {
     Show-SignIn 'SharePoint admin center' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: reads and, after you approve, turns on sensitivity label support for SharePoint, OneDrive and PDF files (a tenant setting that belongs to the Purview baseline).' } else { 'DISCOVER mode: only READS whether sensitivity label support is on for SharePoint, OneDrive and PDF files. Nothing is changed.' }) 'SharePoint tenant administration (Global Administrator role)'
     try {
-        $script:SpoToken = Get-BrowserToken @('AllSites.FullControl') $true '9bc3ab49-b65d-410a-85ad-de819febfddc' $SharePointAdminUrl 'SharePoint admin center' ''
-        $script:SpoOk = $true
+        $script:SpoToken = Get-BrowserToken @('.default') $true '9bc3ab49-b65d-410a-85ad-de819febfddc' $SharePointAdminUrl 'SharePoint admin center' ''
+        $script:SpoOk = $true; $script:SpoMode = 'csom'
         Write-Host '  Signed in to SharePoint admin center.' -ForegroundColor Green
     }
-    catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label setting will be a manual step." -ForegroundColor Yellow }
+    catch {
+        Write-Host '  Direct sign-in was not accepted. Using Microsoft''s own SharePoint sign-in window instead.' -ForegroundColor DarkGray
+        try {
+            Initialize-Module Microsoft.Online.SharePoint.PowerShell
+            Connect-SPOService -Url $SharePointAdminUrl -ErrorAction Stop
+            $script:SpoOk = $true; $script:SpoMode = 'module'
+            Write-Host '  Signed in to SharePoint admin center.' -ForegroundColor Green
+        }
+        catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label setting will be a manual step." -ForegroundColor Yellow }
+    }
 }
 function Invoke-SpoCsom([string]$Actions, [string]$Paths) {
     $xml = "<Request AddExpandoFieldTypeSuffix=`"true`" SchemaVersion=`"15.0.0.0`" LibraryVersion=`"16.0.0.0`" ApplicationName=`"ALSO`" xmlns=`"http://schemas.microsoft.com/sharepoint/clientquery/2009`"><Actions>$Actions</Actions><ObjectPaths>$Paths</ObjectPaths></Request>"
@@ -346,10 +355,15 @@ function Invoke-SpoCsom([string]$Actions, [string]$Paths) {
 }
 $spoTenantPath = '<Constructor Id="1" TypeId="{268004ae-ef6b-4e9b-8425-127220d84719}" />'
 function Get-SpoTenantCsom {
+    if ($script:SpoMode -eq 'module') { return (Get-SPOTenant -ErrorAction Stop) }
     $r = Invoke-SpoCsom '<ObjectPath Id="2" ObjectPathId="1" /><Query Id="3" ObjectPathId="1"><Query SelectAllProperties="true"><Properties /></Query></Query>' $spoTenantPath
     @($r) | Where-Object { $_ -and $_.PSObject.Properties['EnableAIPIntegration'] } | Select-Object -First 1
 }
 function Set-SpoTenantCsom([string]$Name) {
+    if ($script:SpoMode -eq 'module') {
+        if ($Name -eq 'EnableSensitivityLabelforPDF') { Set-SPOTenant -EnableSensitivityLabelforPDF $true -ErrorAction Stop } else { Set-SPOTenant -EnableAIPIntegration $true -ErrorAction Stop }
+        return
+    }
     [void](Invoke-SpoCsom "<ObjectPath Id=`"2`" ObjectPathId=`"1`" /><SetProperty Id=`"3`" ObjectPathId=`"1`" Name=`"$Name`"><Parameter Type=`"Boolean`">true</Parameter></SetProperty>" $spoTenantPath)
 }
 #endregion
