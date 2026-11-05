@@ -8,9 +8,16 @@ Automation script that sets tenant-wide Microsoft 365 settings **not covered by 
 ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce         # guided enforcement
 ```
 
-## Technology choice
-PowerShell 7+: Microsoft Graph, Exchange Online and SharePoint Online are only fully covered by PowerShell modules; Python has no equivalent for Exchange/SPO. Microsoft365DSC is recommended afterwards for drift control; its resources (`AADAuthorizationPolicy`, `AADAuthenticationMethodPolicyFido2`, `EXOAdminAuditLogConfig`, `SPOTenantSettings`, ...) mirror these settings.
+## Engines (one shared reference state: `config/reference-state.json`)
+| Engine | File | Best for |
+| --- | --- | --- |
+| PowerShell orchestrator | `scripts/Invoke-SecureByDefault.ps1` | Full coverage: Graph + Exchange Online + SharePoint, guided, HTML/JSON report |
+| Native Microsoft365DSC | `scripts/Invoke-SecureByDefaultDsc.ps1` + `dsc/SecureByDefault.dsc.ps1` | Declarative baseline and drift control. Discover = `Test-DscConfiguration`, Enforce = `Start-DscConfiguration`. Needs Windows PowerShell 5.1, an Entra app + certificate. Covers audit log, user settings/consent, admin consent workflow, FIDO2, SharePoint sharing, Entra LAPS |
+| Python (Graph-only) | `python/sbd_graph.py` | Cross-platform/CI checks of Entra, consent, FIDO2, LAPS, Intune enrollment. Exchange/SharePoint have no Python SDK |
 
+PowerShell is the primary engine because only it reaches every workload. DSC resources used: `O365AdminAuditLogConfig`, `AADAuthorizationPolicy`, `AADAdminConsentRequestPolicy`, `AADAuthenticationMethodPolicyFido2`, `SPOSharingSettings`, `AADDeviceRegistrationPolicy`. Microsoft365DSC also ships Defender resources (`DefenderDeviceAuthenticatedScanDefinition`, `DefenderRoleDefinition`, `DefenderSubscriptionPlan`) and `IntuneMobileThreatDefenseConnector` for further extension.
+
+> The DSC and Python engines have only been syntax-checked, not run against a tenant. Run Discover first.
 ## Steps
 `AuditLog`, `UserSettings`, `Consent`, `BreakGlass`, `Fido2`, `AuthMethods`, `SharePoint`, `IntuneEnrollment`, `Laps`, `MdoPresets`, `DefenderEndpoint`, `DefenderGuidance` (select with `-Steps`).
 Settings without an API (Entra admin center restriction, LinkedIn, keep-signed-in, Defender Intune toggle) are reported as **Manual** with a direct portal link.
@@ -23,4 +30,5 @@ Reference values live in `config/reference-state.json`; review them for your org
 - Windows LAPS policy must still be deployed via Intune.
 
 ## GitHub Pages
-Site in `docs/`, deployed by `.github/workflows/pages.yml` (Settings > Pages > Source: GitHub Actions). `docs/also-logo.svg` is a placeholder wordmark; replace it with the official ALSO logo.
+Site in `docs/`, deployed by `.github/workflows/pages.yml` (Settings > Pages > Source: GitHub Actions). `docs/also-logo.png` is a the ALSO logo, copied from CoC-MS/ALSO-security-policy-templates-navigator.
+

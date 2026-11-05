@@ -10,8 +10,8 @@
 <body>
 <div class="bg"></div><div class="orb o1"></div><div class="orb o2"></div>
 <header>
-  <a class="logo" href="#top" aria-label="ALSO"><img src="also-logo.svg" alt="ALSO"></a>
-  <nav><a href="#why">Why</a><a href="#covers">What it covers</a><a href="#how">How it works</a><a href="#start">Get started</a></nav>
+  <a class="logo" href="#top" aria-label="ALSO"><img src="also-logo.png" alt="ALSO"></a>
+  <nav><a href="#why">Why</a><a href="#covers">What it covers</a><a href="#engines">Engines</a><a href="#how">How it works</a><a href="#start">Get started</a></nav>
   <a class="btn" href="https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault">GitHub</a>
 </header>
 
@@ -45,7 +45,7 @@
     <div class="card reveal"><div class="ic">🔍</div><h3>Discover before enforce</h3><p>Default mode is strictly read-only and produces a drift report against the reference state.</p></div>
     <div class="card reveal"><div class="ic">🧭</div><h3>Guided step by step</h3><p>Each change is explained and confirmed. Supports <code>-WhatIf</code> for dry runs.</p></div>
     <div class="card reveal"><div class="ic">🛡️</div><h3>Safe by design</h3><p>Passwords are never logged or written to reports; risky policies start in report-only.</p></div>
-    <div class="card reveal"><div class="ic">⚙️</div><h3>Best-supported tooling</h3><p>PowerShell with Microsoft Graph, Exchange Online and SharePoint modules &mdash; the only stack covering all workloads. Pairs with Microsoft365DSC for drift control.</p></div>
+    <div class="card reveal"><div class="ic">⚙️</div><h3>Best-supported tooling</h3><p>PowerShell for full coverage, native Microsoft365DSC for declarative drift control, Python for cross-platform Graph checks.</p></div>
   </div>
 </section>
 
@@ -62,6 +62,16 @@
     <div class="card reveal"><div class="ic">💻</div><h3>Intune enrollment &amp; LAPS</h3><p>MDM auto-enrollment scope, local admin rights, Entra LAPS.</p><span class="tag auto">automated</span></div>
     <div class="card reveal"><div class="ic">📧</div><h3>Defender for Office 365</h3><p>Standard and Strict preset policies and their recipients.</p><span class="tag auto">automated</span></div>
     <div class="card reveal"><div class="ic">🛰️</div><h3>Defender for Endpoint</h3><p>Provisioning, Intune connection, connector status, alerts, Defender for Identity, app governance.</p><span class="tag auto">checks</span><span class="tag man">guided</span></div>
+  </div>
+</section>
+
+<section id="engines" class="engines">
+  <h2 class="reveal">Three engines, one reference state</h2>
+  <p class="sub reveal">All engines read <code>config/reference-state.json</code>. Pick the one that fits your tenant operations.</p>
+  <div class="grid">
+    <div class="card reveal"><div class="ic">⚡</div><h3>PowerShell orchestrator</h3><p>Guided, interactive and complete: Graph, Exchange Online and SharePoint Online in one run with HTML/JSON reports.</p><span class="tag ps">scripts/Invoke-SecureByDefault.ps1</span></div>
+    <div class="card reveal"><div class="ic">🧬</div><h3>Native Microsoft365DSC</h3><p>Declarative baseline using DSC resources (<code>AADAuthorizationPolicy</code>, <code>AADAuthenticationMethodPolicyFido2</code>, <code>O365AdminAuditLogConfig</code>, <code>SPOSharingSettings</code>, <code>AADDeviceRegistrationPolicy</code>). Discover with <code>Test-DscConfiguration</code>, enforce with <code>Start-DscConfiguration</code>.</p><span class="tag dsc">scripts/Invoke-SecureByDefaultDsc.ps1</span></div>
+    <div class="card reveal"><div class="ic">🐍</div><h3>Python (Graph-only)</h3><p>Cross-platform checks and fixes for Entra, consent, FIDO2, LAPS and Intune enrollment. Ideal for CI and Linux/macOS. Exchange and SharePoint stay in PowerShell.</p><span class="tag py">python/sbd_graph.py</span></div>
   </div>
 </section>
 
@@ -88,7 +98,14 @@ cd ALSO-Microsoft-Security-SecureByDefault
 ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce -Steps AuditLog,Fido2 -WhatIf
 
 # 3. guided enforcement
-./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce</pre>
+./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce
+
+# Alternative: native Microsoft365DSC (Windows PowerShell 5.1, app + certificate)
+.\scripts\Invoke-SecureByDefaultDsc.ps1 -TenantId &lt;id&gt; -ApplicationId &lt;id&gt; -CertificateThumbprint &lt;thumb&gt;
+
+# Alternative: Python, Graph-only checks (cross-platform)
+pip install -r python/requirements.txt
+python python/sbd_graph.py</pre>
 </section>
 </main>
 <footer>ALSO Secure by Default &middot; Review the reference state against your organization's requirements before enforcing.</footer>
