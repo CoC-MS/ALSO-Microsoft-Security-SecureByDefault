@@ -114,19 +114,20 @@ $graphScopes = if ($Mode -eq 'Enforce') {
     'Policy.ReadWrite.AuthorizationPolicy', 'Policy.ReadWrite.AuthenticationMethod', 'Policy.ReadWrite.ConsentRequest',
     'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'User.ReadWrite.All', 'Group.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
-    'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All'
+    'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
+    'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
-    'DeviceManagementServiceConfig.Read.All', 'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All'
-}
-Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
+    'DeviceManagementServiceConfig.Read.All',     'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All',
+        'SharePointTenantSettings.Read.All'
+    }
+    Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
 
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool]($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' })
-$needsSpo = $Steps -contains 'SharePoint'
-$signInCount = 1 + [int]$needsExo + [int]$needsSpo
+$signInCount = 1 + [int]$needsExo
 $script:signInNo = 0
 function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     $script:signInNo++
@@ -193,10 +194,16 @@ function Step-UserSettings {
         }
         else { Add-Result 'UserSettings' 'Users can register agent identity blueprints' 'not exposed by API' $ref.usersCanRegisterAgentBlueprints Manual $link }
     }
-    catch { Add-Result 'UserSettings' 'Users can register agent identity blueprints' 'not readable' $ref.usersCanRegisterAgentBlueprints Manual $link }
-    Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' 'portal-only' $ref.restrictAdminCenter Manual $link
-    Add-Result 'UserSettings' 'LinkedIn account connections' 'portal-only' "$($ref.linkedIn) (business/privacy decision)" Manual $link
-    Add-Result 'UserSettings' 'Show keep user signed in' 'portal-only' $ref.showKeepSignedIn Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding'
+    catch { Add-Result 'UserSettings' 'Users can register agent identity blueprints' "not readable: $($_.Exception.Message)" $ref.usersCanRegisterAgentBlueprints Manual $link }
+    try {
+        $ux = 'https://graph.microsoft.com/beta/admin/entra/uxSetting'
+        $u = Graph GET $ux
+        Compare-Setting 'UserSettings' 'Restrict access to Microsoft Entra admin center' ($(if ($u.restrictNonAdminAccess) { 'Yes' } else { 'No' })) $ref.restrictAdminCenter {
+            Graph PATCH $ux @{ restrictNonAdminAccess = ($ref.restrictAdminCenter -eq 'Yes') } | Out-Null } $link
+    }
+    catch { Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' "not readable: $($_.Exception.Message)" $ref.restrictAdminCenter Manual $link }
+    Add-Result 'UserSettings' 'LinkedIn account connections' 'no Microsoft API exists (portal only)' "$($ref.linkedIn) (business/privacy decision)" Manual $link
+    Add-Result 'UserSettings' 'Show keep user signed in' 'no Microsoft API exists (portal only)' $ref.showKeepSignedIn Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding'
 }
 
 function Step-Consent {
@@ -204,9 +211,12 @@ function Step-Consent {
     $ref = $script:Reference.consent
     $uri = 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy'
     $p = Graph GET $uri
-    $current = @($p.defaultUserRolePermissions.permissionGrantPoliciesAssigned) -join ','
-    Compare-Setting 'Consent' 'User consent policy' $current $ref.userConsentPolicy {
-        Graph PATCH $uri @{ defaultUserRolePermissions = @{ permissionGrantPoliciesAssigned = @($ref.userConsentPolicy) } }
+    $assigned = @($p.defaultUserRolePermissions.permissionGrantPoliciesAssigned)
+    $low = $ref.userConsentPolicy
+    $ok = ($low -in $assigned) -and -not ($assigned | Where-Object { $_ -match 'microsoft-user-default-legacy' })
+    Compare-Setting 'Consent' 'User consent limited to low-risk (verified publishers)' $ok 'True' {
+        $keep = @($assigned | Where-Object { $_ -notmatch '^ManagePermissionGrantsForSelf\.' })
+        Graph PATCH $uri @{ defaultUserRolePermissions = @{ permissionGrantPoliciesAssigned = @($low) + $keep } }
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings'
     $w = Graph GET 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
     Compare-Setting 'Consent' 'Admin consent request workflow enabled' $w.isEnabled 'True' {
@@ -312,18 +322,18 @@ function Step-AuthMethods {
 }
 
 function Step-SharePoint {
-    Write-Step 'SharePoint & OneDrive external sharing' 'Tighten tenant-level sharing and default links.'
-    Initialize-Module Microsoft.Online.SharePoint.PowerShell
-    Show-SignIn 'SharePoint Online admin' 'Tenant-level external sharing settings.' "SharePoint administration at $SharePointAdminUrl"
-    Connect-SPOService -Url $SharePointAdminUrl
-    Write-Host '  Signed in to SharePoint Online.' -ForegroundColor Green
-    $t = Get-SPOTenant
+    Write-Step 'SharePoint & OneDrive external sharing' 'Tighten tenant-level sharing (read and set through Microsoft Graph, no extra sign-in).'
+    $uri = 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings'
+    $t = Graph GET $uri
     $ref = $script:Reference.sharePoint
     $link = "$SharePointAdminUrl/_layouts/15/online/AdminHome.aspx#/sharing"
-    Compare-Setting 'SharePoint' 'SharingCapability' $t.SharingCapability $ref.sharingCapability { Set-SPOTenant -SharingCapability $ref.sharingCapability } $link
-    Compare-Setting 'SharePoint' 'DefaultSharingLinkType' $t.DefaultSharingLinkType $ref.defaultSharingLinkType { Set-SPOTenant -DefaultSharingLinkType $ref.defaultSharingLinkType } $link
-    Compare-Setting 'SharePoint' 'Anonymous links expire within 30 days' ([int]$t.RequireAnonymousLinksExpireInDays -in 1..30) 'True' { Set-SPOTenant -RequireAnonymousLinksExpireInDays 30 } $link
-    Compare-Setting 'SharePoint' 'ExternalUserExpirationRequired' $t.ExternalUserExpirationRequired 'True' { Set-SPOTenant -ExternalUserExpirationRequired $true -ExternalUserExpireInDays 30 } $link
+    Compare-Setting 'SharePoint' 'External sharing level (sharingCapability)' $t.sharingCapability $ref.sharingCapability {
+        Graph PATCH $uri @{ sharingCapability = ($ref.sharingCapability.Substring(0, 1).ToLower() + $ref.sharingCapability.Substring(1)) } | Out-Null } $link
+    Compare-Setting 'SharePoint' 'Guests must sign in with the invited account' $t.isRequireAcceptingUserToMatchInvitedUserEnabled 'True' {
+        Graph PATCH $uri @{ isRequireAcceptingUserToMatchInvitedUserEnabled = $true } | Out-Null } $link
+    Compare-Setting 'SharePoint' 'Legacy authentication protocols enabled' $t.isLegacyAuthProtocolsEnabled 'False' {
+        Graph PATCH $uri @{ isLegacyAuthProtocolsEnabled = $false } | Out-Null } $link
+    Add-Result 'SharePoint' 'Default sharing link type / anonymous link and guest expiry' 'not exposed by Microsoft Graph' 'Direct, expiry 30 days' Manual $link
 }
 
 function Step-IntuneEnrollment {
@@ -355,28 +365,45 @@ function Step-Laps {
 function Step-MdoPresets {
     Write-Step 'Defender for Office 365 preset security policies' 'Standard/Strict presets for EOP and Safe Links/Attachments.'
     $link = 'https://security.microsoft.com/presetSecurityPolicies'
+    $found = $false
     foreach ($kind in 'EOP', 'ATP') {
-        foreach ($r in @(& "Get-${kind}ProtectionPolicyRule")) {
-            if ($r.Identity -match 'Standard') {
-                Compare-Setting 'MdoPresets' "$kind $($r.Identity) state" $r.State 'Enabled' { & "Enable-${kind}ProtectionPolicyRule" -Identity $r.Identity } $link
+        try { $rules = @(& "Get-${kind}ProtectionPolicyRule" -ErrorAction Stop) }
+        catch { Add-Result 'MdoPresets' "$kind preset rules" "not readable: $($_.Exception.Message)" 'readable' Manual $link; continue }
+        foreach ($r in $rules) {
+            $found = $true
+            if ($r.Identity -match 'Standard|Strict') {
+                $want = if ($r.Identity -match 'Standard') { 'Enabled' } else { $r.State }
+                Compare-Setting 'MdoPresets' "$kind $($r.Identity) state" $r.State $want { & "Enable-${kind}ProtectionPolicyRule" -Identity $r.Identity } $link
             }
             else { Add-Result 'MdoPresets' "$kind $($r.Identity)" $r.State 'review recipients' Info $link }
         }
+    }
+    if (-not $found) {
+        Add-Result 'MdoPresets' 'Standard preset security policy' 'not configured (no preset rules exist)' 'Standard enabled for all recipients' Manual $link
+        Write-Host '   Microsoft only creates the preset rules when you first assign recipients in the Defender portal (Preset security policies > Standard protection > Manage). After that, this script can enable/verify them.' -ForegroundColor DarkGray
     }
 }
 
 function Step-DefenderEndpoint {
     Write-Step 'Defender for Endpoint & Intune connection' 'Verify provisioning and connector status.'
     $atp = 'https://intune.microsoft.com/#view/Microsoft_Intune_Workflows/SecurityManagementMenu/~/atp'
-    Add-Result 'DefenderEndpoint' 'Defender for Business/Endpoint provisioned (Assets > Devices)' 'portal check' 'devices page loads' Manual 'https://security.microsoft.com/machines?category=all-devices'
-    Add-Result 'DefenderEndpoint' 'Intune connection ON (Settings > Endpoints > Advanced features)' 'portal check' 'On' Manual 'https://security.microsoft.com/securitysettings/endpoints/integration'
+    try {
+        $skus = (Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value
+        $plans = @($skus | Where-Object { $_.capabilityStatus -eq 'Enabled' } | ForEach-Object { $_.servicePlans } | Where-Object { $_.servicePlanName -match 'WINDEFATP|MDE_SMB|MDE_LITE|DEFENDER_ENDPOINT' -and $_.provisioningStatus -eq 'Success' })
+        Add-Result 'DefenderEndpoint' 'Defender for Business/Endpoint licensed and provisioned' $(if ($plans) { 'yes' } else { 'no matching service plan' }) 'yes' $(if ($plans) { 'Compliant' } else { 'Drift' }) 'https://security.microsoft.com/machines?category=all-devices'
+    }
+    catch { Add-Result 'DefenderEndpoint' 'Defender licensing check' "not readable: $($_.Exception.Message)" 'yes' Manual 'https://security.microsoft.com/machines?category=all-devices' }
     try {
         $c = @((Graph GET 'https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors').value)
-        $mde = @($c | Where-Object { $_.id })
-        if (-not $mde) { Add-Result 'DefenderEndpoint' 'Intune MDE connector' 'none' 'enabled' Drift $atp }
-        foreach ($x in $mde) { Compare-Setting 'DefenderEndpoint' "Intune connector $($x.id)" $x.partnerState 'enabled' $null $atp }
+        if (-not $c) { Add-Result 'DefenderEndpoint' 'Intune <-> Defender connection' 'no connector yet' 'enabled' Manual 'https://security.microsoft.com/securitysettings/endpoints/integration'; Write-Host '   Turn on "Microsoft Intune connection" once in the Defender portal (Settings > Endpoints > Advanced features); this creates the connector.' -ForegroundColor DarkGray }
+        foreach ($x in $c) {
+            $cid = $x.id
+            Compare-Setting 'DefenderEndpoint' "Intune <-> Defender connection ($cid)" $x.partnerState 'enabled' {
+                Graph PATCH "https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors/$cid" @{ partnerState = 'enabled'; windowsEnabled = $true; androidEnabled = $true; iosEnabled = $true; macEnabled = $true; microsoftDefenderForEndpointAttachEnabled = $true } | Out-Null
+            } $atp
+        }
     }
-    catch { Add-Result 'DefenderEndpoint' 'Intune MDE connector status' 'not readable' 'Enabled' Manual $atp }
+    catch { Add-Result 'DefenderEndpoint' 'Intune <-> Defender connection' "not readable: $($_.Exception.Message)" 'enabled' Manual $atp }
 }
 
 function Step-DefenderGuidance {
@@ -408,8 +435,22 @@ $rows = $script:Results | ForEach-Object {
 Write-Host "`nSummary:" -ForegroundColor Cyan
 $script:Results | Group-Object Status | ForEach-Object { Write-Host ("  {0,-10} {1}" -f $_.Name, $_.Count) }
 Write-Host "Reports: $json`n         $html"
-if ($Mode -eq 'Discover' -and ($script:Results | Where-Object Status -eq 'Drift')) {
-    Write-Host "Drift found. Review the report, then re-run with -Mode Enforce." -ForegroundColor Yellow
+if ($Mode -eq 'Discover') {
+    $driftSteps = @($script:Results | Where-Object Status -eq 'Drift' | Select-Object -ExpandProperty Step -Unique)
+    if ($driftSteps) {
+        Write-Host "`nDrift found in: $($driftSteps -join ', ')" -ForegroundColor Yellow
+        Write-Host 'Enforce mode changes settings one at a time and asks you to confirm each change. It needs a new Global Administrator sign-in with write permissions.'
+        if ((Read-Host 'Do you want to proceed with step-by-step enforce mode? [y/N]') -match '^(y|yes)$') {
+            try { Disconnect-MgGraph | Out-Null } catch { }
+            try { Disconnect-ExchangeOnline -Confirm:$false | Out-Null } catch { }
+            $pass = @{ Mode = 'Enforce'; Steps = $driftSteps; OutputPath = $OutputPath; BreakGlassGroupName = $BreakGlassGroupName; BreakGlassAuName = $BreakGlassAuName }
+            foreach ($k in 'SharePointAdminUrl', 'PilotGroupId', 'AdminConsentReviewerIds') { if ($PSBoundParameters.ContainsKey($k)) { $pass[$k] = $PSBoundParameters[$k] } }
+            if ($Force) { $pass.Force = $true }
+            if ($WhatIfPreference) { $pass.WhatIf = $true }
+            & $PSCommandPath @pass
+        }
+        else { Write-Host 'No changes made. Re-run with -Mode Enforce whenever you are ready.' -ForegroundColor Green }
+    }
 }
 #endregion
 
