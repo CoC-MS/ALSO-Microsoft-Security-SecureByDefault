@@ -123,13 +123,17 @@ Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
 
 Initialize-Module Microsoft.Graph.Authentication
-Connect-MgGraph -Scopes $graphScopes -NoWelcome
+try { Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop }
+catch {
+    Write-Host 'Interactive sign-in unavailable, falling back to device code sign-in.' -ForegroundColor Yellow
+    Connect-MgGraph -Scopes $graphScopes -NoWelcome -UseDeviceCode
+}
 $org = (Graph GET 'https://graph.microsoft.com/v1.0/organization').value[0]
 $initialDomain = ($org.verifiedDomains | Where-Object { $_.isInitial }).name
 Write-Host "Tenant: $($org.displayName) ($($org.id)), initial domain: $initialDomain"
 if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.Split('.')[0])-admin.sharepoint.com" }
 
-if ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }) { Initialize-Module ExchangeOnlineManagement; Connect-ExchangeOnline -ShowBanner:$false }
+if ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }) { Initialize-Module ExchangeOnlineManagement; try { Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop } catch { Connect-ExchangeOnline -ShowBanner:$false -Device } }
 #endregion
 
 #region steps
