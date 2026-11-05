@@ -142,7 +142,8 @@ Write-Host '  First run only: approve the request for the "Microsoft Graph Comma
 try { Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction SilentlyContinue } catch { }
 try { Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop }
 catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message). Close any stuck sign-in windows and run the script again." }
-Write-Host '  Signed in to Microsoft Graph.' -ForegroundColor Green$gaRole = '62e90394-69f5-4237-9190-012177145e10'
+Write-Host '  Signed in to Microsoft Graph.' -ForegroundColor Green
+$gaRole = '62e90394-69f5-4237-9190-012177145e10'
 $myRoles = (Graph GET 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId').value.roleTemplateId
 if ($gaRole -notin $myRoles) {
     $msg = 'The signed-in account is not an active Global Administrator. All steps require Global Administrator.'
