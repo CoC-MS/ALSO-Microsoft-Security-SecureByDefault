@@ -20,11 +20,13 @@ cd ALSO-Microsoft-Security-SecureByDefault
 ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce          # 2. guided enforcement
 ```
 
+Run it from PowerShell 7 as administrator. The report has two tabs: Automated checks and actions, and Manual checks and actions. In Enforce mode you can apply changes one by one, apply all remaining, and deploy policies all at once or one by one. Existing Conditional Access, Intune and Purview policies are listed and never changed.
+
 Run a subset of steps with `-Steps AuditLog,Fido2`. Reports are written to `sbd-reports` as HTML and JSON.
 
 ## What it covers
 
-Unified audit log, Entra user and external collaboration settings, user consent, emergency access accounts (security group and restricted management administrative unit), FIDO2 and authentication methods, SharePoint sharing, Conditional Access baseline import (switched off), administrator role and access review checks, Intune enrollment, the Intune policy baseline (compliance, app protection, BitLocker, LAPS, Defender, Edge), Defender for Office 365 preset policies, Microsoft Purview baseline checks, and Defender for Business / Endpoint provisioning checks with Intune connection guidance.
+Unified audit log, Entra user and external collaboration settings, user consent, emergency access accounts (security group and restricted management administrative unit), FIDO2 and authentication methods, SharePoint sharing, Conditional Access baseline import (switched off), administrator role and access review checks, Intune enrollment, the Intune policy baseline (compliance, app protection, BitLocker, LAPS, Defender, Edge), Defender for Office 365 preset policies, Microsoft Purview (existing labels, label policies, DLP and retention compared with the ALSO baseline, SharePoint label settings, and deployment of what is missing), the other steps of the ALSO Copilot readiness guide, and Defender for Business / Endpoint provisioning checks with Intune connection guidance.
 
 Expected values live in `config/reference-state.json`. Review them against your organization's requirements before enforcing.
 
