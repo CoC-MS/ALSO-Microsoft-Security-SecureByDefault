@@ -24,10 +24,10 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet('Discover', 'Enforce')][string]$Mode = 'Discover',
-    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
-        'IntuneEnrollment', 'Laps', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance')]
-    [string[]]$Steps = @('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
-        'IntuneEnrollment', 'Laps', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'),
+    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual')]
+    [string[]]$Steps = @('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
     [string]$PilotGroupId,
@@ -128,19 +128,21 @@ $graphScopes = if ($Mode -eq 'Enforce') {
     'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'User.ReadWrite.All', 'Group.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
     'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
-    'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess'
+    'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess',
+    'DeviceManagementApps.ReadWrite.All', 'Application.Read.All', 'AccessReview.Read.All'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
     'DeviceManagementServiceConfig.Read.All',     'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All',
-        'SharePointTenantSettings.Read.All'
+        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All', 'Application.Read.All', 'AccessReview.Read.All'
     }
     Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
 
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool]($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' })
-$signInCount = 1 + [int]$needsExo
+$needsPurview = [bool]($Steps -contains 'Purview')
+$signInCount = 1 + [int]$needsExo + [int]$needsPurview
 $script:signInNo = 0
 function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     $script:signInNo++
@@ -227,6 +229,16 @@ if ($needsExo) {
     catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
     Write-Host '  Signed in to Exchange Online.' -ForegroundColor Green
 }
+if ($needsPurview) {
+    Show-SignIn 'Microsoft Purview (Security & Compliance)' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: checks whether the ALSO Purview baseline (sensitivity labels, label policy, DLP and retention policies) exists. The baseline itself is deployed with ALSO''s Purview toolkit, so this sign-in is used to read only.' } else { 'DISCOVER mode: only READS sensitivity labels, label policies, DLP and retention policies. Nothing is changed.' }) 'Security & Compliance administration (Global Administrator role)'
+    Initialize-Module ExchangeOnlineManagement
+    try { Connect-IPPSSession -ShowBanner:$false -DisableWAM -ErrorAction Stop }
+    catch {
+        if ($_.Exception.Message -match 'parameter') { try { Connect-IPPSSession -ShowBanner:$false -ErrorAction Stop } catch { throw "Purview sign-in failed: $($_.Exception.Message)" } }
+        else { throw "Purview sign-in failed: $($_.Exception.Message)" }
+    }
+    Write-Host '  Signed in to Microsoft Purview.' -ForegroundColor Green
+}
 #endregion
 
 #region steps
@@ -244,7 +256,7 @@ function Get-LicenseTier {
     elseif ($parts | Where-Object { $_ -match $basicRx }) { 'Basic' }
     elseif ($plans | Where-Object { $_ -match 'INTUNE_A|WINDEFATP|MDE_SMB|AAD_PREMIUM' }) { 'Standard' }
     else { 'Standard' }
-    $script:LicenseInfo = [pscustomobject]@{ Tier = $tier; Skus = ($parts -join ', ') }
+    $script:LicenseInfo = [pscustomobject]@{ Tier = $tier; Skus = ($parts -join ', '); HasP2 = [bool]($plans -contains 'AAD_PREMIUM_P2') }
     $script:LicenseInfo
 }
 
@@ -283,7 +295,7 @@ function Step-SecurityDefaults {
     $doc = $GuideBase + '#identity-policies'
     $uri = 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy'
     $sd = Graph GET $uri
-    $ca = @((Graph GET 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$select=id').value)
+    $ca = @((Graph GET 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$select=id,state').value | Where-Object { $_.state -ne 'disabled' })
     $why = 'Security defaults gives every user baseline MFA but cannot be customised (no break-glass exclusions, no authentication strengths, no device or location rules). Conditional Access and security defaults cannot be used together. Recommended: deploy ALSO''s Conditional Access baseline (step 10, Identity and access, in the ALSO guide), then turn security defaults OFF. If no Conditional Access policies exist, keep security defaults ON so the tenant is never left without MFA.'
     if ($sd.isEnabled -eq $true) {
         Add-Result 'SecurityDefaults' 'Security defaults' 'On' 'On until ALSO Conditional Access baseline is deployed, then Off' Manual $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
@@ -476,7 +488,7 @@ function Step-BreakGlass {
     $caLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
     Add-Result 'BreakGlass' "Add 1-2 trusted admins as administrators of the '$BreakGlassAuName' administrative unit" 'Cannot be checked automatically' "Only these trusted admins can manage the group '$BreakGlassGroupName' and the two break-glass accounts" Manual $adminLink 'The restricted management administrative unit protects the group and both accounts from being changed by regular admins. Only the trusted admins you add as administrators of the unit (Entra ID > Roles and administrators > Administrative units) can reset passwords, change membership or delete them. Add 1-2 trusted admins only.' $BreakGlassPdf 'Break-glass best practices (PDF)'
     Add-Result 'BreakGlass' 'Set up monitoring and an alert on every sign-in of the break-glass accounts' 'Cannot be checked automatically' 'Alert goes to the security team on any sign-in' Manual $bgDoc 'Any sign-in with a break-glass account means something went wrong or an attack is under way. Send sign-in logs to Log Analytics / Sentinel and create an alert rule (or a Defender XDR custom detection) that notifies the security team immediately on every sign-in of either account. Test the alert regularly.' $BreakGlassPdf 'Break-glass best practices (PDF)'
-    Add-Result 'BreakGlass' 'Exclude both break-glass accounts (or the group) from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every Conditional Access policy' Manual $caLink "If a Conditional Access policy breaks sign-in (or MFA is unavailable) the break-glass accounts must still be able to get in. Exclude the group '$BreakGlassGroupName' from every Conditional Access policy, including new ones. Their own protection comes from long random passwords, security keys and monitoring." $BreakGlassPdf 'Break-glass best practices (PDF)'
+    if (-not ($Steps -contains 'ConditionalAccess')) { Add-Result 'BreakGlass' 'Exclude both break-glass accounts (or the group) from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every Conditional Access policy' Manual $caLink "If a Conditional Access policy breaks sign-in (or MFA is unavailable) the break-glass accounts must still be able to get in. Exclude the group '$BreakGlassGroupName' from every Conditional Access policy, including new ones. Their own protection comes from long random passwords, security keys and monitoring." $BreakGlassPdf 'Break-glass best practices (PDF)' }
     Add-Result 'BreakGlass' 'Register at least one FIDO2 security key on EACH break-glass account' 'Cannot be checked automatically' 'Each account has its own registered security key' Manual 'https://mysignins.microsoft.com/security-info' 'The accounts are excluded from Conditional Access, so they need their own phishing-resistant sign-in. Sign in once to each account and register at least one FIDO2 security key per account at My Security Info. Store the keys in separate secure physical locations (for example two safes) and document who may access them.' $BreakGlassPdf 'Break-glass best practices (PDF)'
     if ($Mode -eq 'Enforce') {
         Write-Host ''
@@ -656,16 +668,383 @@ function Step-DefenderGuidance {
         Add-Result 'DefenderGuidance' 'App governance / OAuth app policies' "No license found - app governance $need (Defender for Cloud Apps)" 'Skipped (not licensed)' Skipped 'https://security.microsoft.com/cloudapps/app-governance' 'App governance is an add-on to Defender for Cloud Apps and is not available without it, so this step is skipped.' ($GuideBase + '#app-governance') $agText
     }
 }
+#region guide automation helpers
+function Get-AllPages([string]$Uri) {
+    $out = @()
+    while ($Uri) { $r = Graph GET $Uri; $out += @($r.value); $Uri = $r.'@odata.nextLink' }
+    $out
+}
+
+function Find-GroupByName([string]$Name) {
+    $q = [uri]::EscapeDataString("displayName eq '$($Name.Replace("'", "''"))'")
+    (Graph GET ('https://graph.microsoft.com/v1.0/groups?$filter=' + $q + '&$select=id,displayName')).value | Select-Object -First 1
+}
+
+function Get-GuidePackage([string]$Name) {
+    $root = Join-Path ([IO.Path]::GetTempPath()) 'sbd-packages'
+    $dir = Join-Path $root $Name
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force $root | Out-Null
+        $zip = Join-Path $root "$Name.zip"
+        Invoke-WebRequest -Uri "${GuideBase}downloads/$Name.zip" -OutFile $zip -UseBasicParsing
+        Expand-Archive $zip -DestinationPath $dir -Force
+    }
+    $dir
+}
+
+function Get-PackageJson([string]$Dir, [string]$Folder) {
+    Get-ChildItem $Dir -Recurse -Filter *.json | Where-Object { (-not $Folder) -or $_.Directory.Name -eq $Folder } | ForEach-Object {
+        [pscustomobject]@{ File = $_; Json = (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) }
+    }
+}
+
+# Turns a Graph export (Intune/Entra JSON) into a body Graph accepts on create.
+function ConvertTo-CleanBody {
+    param($Node, [bool]$Top = $true)
+    $dropTop = 'id', 'createdDateTime', 'lastModifiedDateTime', 'modifiedDateTime', 'version', 'isAssigned', 'deployedAppCount', 'settingCount',
+    'assignments', 'apps', 'creationSource', 'deviceStatuses', 'userStatuses', 'deviceStatusOverview', 'userStatusOverview',
+    'deviceStatusSummary', 'userStatusSummary', 'deviceSettingStateSummaries'
+    if ($null -eq $Node) { return $null }
+    if ($Node -is [string] -or $Node -is [ValueType]) { return $Node }
+    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [System.Collections.IDictionary]) {
+        $arr = @(foreach ($i in $Node) { ConvertTo-CleanBody $i $false })
+        return , $arr
+    }
+    $pairs = if ($Node -is [System.Collections.IDictionary]) { foreach ($k in $Node.Keys) { [pscustomobject]@{ Name = $k; Value = $Node[$k] } } } else { $Node.PSObject.Properties }
+    $h = [ordered]@{}
+    foreach ($p in $pairs) {
+        $k = "$($p.Name)"; $v = $p.Value
+        if ($k -like '*@odata.*' -and $k -ne '@odata.type') { continue }
+        if ($k -like '#microsoft.graph.*') { continue }
+        if ($Top -and $k -in $dropTop) { continue }
+        if (-not $Top -and $k -eq 'id' -and "$v" -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { continue }
+        if ($null -eq $v) { continue }
+        $h[$k] = ConvertTo-CleanBody $v $false
+    }
+    return $h
+}
 #endregion
 
-$basicSkip = 'IntuneEnrollment', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
+function Step-ConditionalAccess {
+    Write-Step 'Conditional Access baseline' 'Imports ALSO''s Conditional Access policies (switched OFF), keeps the break-glass group excluded from every policy.'
+    $doc = $GuideBase + '#identity-policies'
+    $docText = 'ALSO guide: Conditional Access baseline (Identity and access, step 10)'
+    $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
+    $lic = Get-LicenseTier
+    $caBase = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
+    $dir = Get-GuidePackage 'conditional-access'
+    $polFiles = @(Get-PackageJson $dir 'ConditionalAccess')
+    $grpFiles = @(Get-PackageJson $dir 'Groups')
+    $ctxFiles = @(Get-PackageJson $dir 'AuthenticationContext')
+    $bgGroup = Find-GroupByName $BreakGlassGroupName
+    $bgId = $bgGroup.id
+    $e5ok = ($lic.Tier -eq 'Full') -or $lic.HasP2
+    $wanted = @($polFiles | Where-Object { $e5ok -or $_.File.Name -notmatch '^E5-' })
+    $skippedE5 = @($polFiles | Where-Object { -not $e5ok -and $_.File.Name -match '^E5-' })
+    if ($skippedE5.Count) {
+        Add-Result 'ConditionalAccess' "ALSO E5 Conditional Access policies ($($skippedE5.Count))" 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'These policies use Entra ID Protection (risk) or Privileged Identity Management features that are only included with Entra ID P2.' $doc $docText
+    }
+    $existing = @(Get-AllPages $caBase)
+    $names = @($existing | ForEach-Object { $_.displayName })
+    $missing = @($wanted | Where-Object { $_.Json.displayName -notin $names })
+    $present = $wanted.Count - $missing.Count
+    $why = 'ALSO''s baseline blocks legacy authentication, requires MFA for users and admins, protects admin portals and guests and requires compliant devices. Policies are created switched OFF so nothing changes until you review them: turn each one on in report-only first, check the sign-in logs, then enable. Security defaults must be turned off before the policies are enabled. The break-glass group is excluded from every imported policy.'
+    Compare-Setting 'ConditionalAccess' 'ALSO Conditional Access baseline policies' "$present of $($wanted.Count) present" "$($wanted.Count) of $($wanted.Count) present (switched off)" {
+        $map = @{}
+        $ref = @()
+        foreach ($p in $missing) { foreach ($k in 'includeGroups', 'excludeGroups') { $ref += @($p.Json.conditions.users.$k) } }
+        $ref = @($ref | Where-Object { $_ } | Sort-Object -Unique)
+        $createdGroups = @()
+        foreach ($g in $grpFiles) {
+            if ($g.Json.id -notin $ref) { continue }
+            $gn = $g.Json.displayName
+            if ($gn -like '*BSAccounts*' -and $bgId) { $map["$($g.Json.id)"] = $bgId; continue }
+            $f = Find-GroupByName $gn
+            if (-not $f) {
+                $nick = ($gn -replace '[^A-Za-z0-9]', '')
+                if ($nick.Length -gt 60) { $nick = $nick.Substring(0, 60) }
+                $f = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $gn; description = 'ALSO Conditional Access baseline group'; mailEnabled = $false; securityEnabled = $true; mailNickname = $nick }
+                Write-Host "   Created group: $gn" -ForegroundColor DarkGray
+            }
+            $map["$($g.Json.id)"] = $f.id
+        }
+        foreach ($c in $ctxFiles) {
+            $cid = $c.Json.id
+            $have = $true
+            try { Graph GET "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences/$cid" | Out-Null } catch { $have = $false }
+            if (-not $have) {
+                Graph POST 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' @{ id = $cid; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null
+                Write-Host "   Created authentication context: $($c.Json.displayName)" -ForegroundColor DarkGray
+            }
+        }
+        $fail = @()
+        foreach ($p in $missing) {
+            try {
+                $b = ConvertTo-CleanBody $p.Json
+                $b['state'] = 'disabled'
+                $u = $b['conditions']['users']
+                foreach ($k in 'includeGroups', 'excludeGroups') {
+                    if ($u.Contains($k)) { $u[$k] = [object[]]@(@($u[$k]) | ForEach-Object { $map["$_"] } | Where-Object { $_ }) }
+                }
+                if ($bgId) {
+                    $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
+                    if ($bgId -notin $ex) { $u['excludeGroups'] = [object[]]($ex + $bgId) }
+                }
+                $as = $p.Json.grantControls.authenticationStrength
+                if ($as -and $b['grantControls']) { $b['grantControls']['authenticationStrength'] = [ordered]@{ id = $as.id } }
+                Graph POST $caBase $b | Out-Null
+                Write-Host "   Imported (off): $($p.Json.displayName)" -ForegroundColor DarkGray
+            }
+            catch { $fail += "$($p.Json.displayName): $($_.Exception.Message)" }
+        }
+        if ($fail.Count) { throw ("Not imported: " + ($fail -join ' | ')) }
+    } $link $why $doc $docText
+
+    $existing = @(Get-AllPages $caBase)
+    if ($bgId) {
+        $need = @($existing | Where-Object { @($_.conditions.users.excludeGroups) -notcontains $bgId -and @($_.conditions.users.includeUsers) -notcontains 'None' })
+        $ok = $existing.Count - $need.Count
+        if ($existing.Count) {
+            Compare-Setting 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all Conditional Access policies" "$ok of $($existing.Count) policies exclude it" "$($existing.Count) of $($existing.Count) policies exclude it" {
+                foreach ($pol in $need) {
+                    $u = ConvertTo-CleanBody $pol.conditions.users $false
+                    $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
+                    $u['excludeGroups'] = [object[]]($ex + $bgId)
+                    Graph PATCH "$caBase/$($pol.id)" @{ conditions = @{ users = $u } } | Out-Null
+                }
+            } $link 'If a Conditional Access policy breaks sign-in, or MFA is unavailable, the break-glass accounts must still get in. The group is added to the excluded groups of every policy that does not have it yet.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        }
+    }
+    else {
+        Add-Result 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all Conditional Access policies" 'Break-glass group not found' 'Group exists and is excluded everywhere' Manual $link 'Create the break-glass accounts and group first (Break-glass step), then run this step again so the group can be excluded from every Conditional Access policy.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+    }
+
+    $au = (Graph GET ('https://graph.microsoft.com/v1.0/administrativeUnits?$filter=' + [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'"))).value | Select-Object -First 1
+    if ($au) {
+        $auMembers = @(Get-AllPages "https://graph.microsoft.com/v1.0/administrativeUnits/$($au.id)/members?`$select=id" | ForEach-Object { $_.id })
+        $ids = @()
+        foreach ($g in $grpFiles) { if ($g.Json.displayName -like '*BSAccounts*') { continue }; $f = Find-GroupByName $g.Json.displayName; if ($f) { $ids += $f.id } }
+        if ($ids.Count) {
+            $notIn = @($ids | Where-Object { $_ -notin $auMembers })
+            Compare-Setting 'ConditionalAccess' "ALSO Conditional Access groups protected by restricted management ($BreakGlassAuName)" "$($ids.Count - $notIn.Count) of $($ids.Count) groups inside" "$($ids.Count) of $($ids.Count) groups inside" {
+                foreach ($id in $notIn) { Graph POST "https://graph.microsoft.com/v1.0/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$id" } | Out-Null }
+            } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdminUnitsManagementMenuBlade/~/AdminUnits' 'Groups used in Conditional Access decide who is protected or excluded. Putting them in the restricted management administrative unit stops anyone except the break-glass administrators from changing their membership.' ($GuideBase + '#restricted-management-admin-units') 'ALSO guide: Restricted management administrative units (Identity and access, step 11)'
+        }
+    }
+    Add-Result 'ConditionalAccess' 'Review, test and switch on the imported Conditional Access policies' 'Imported policies are switched off' 'Each policy tested in report-only, then enabled' Manual $link 'Open each ALSO policy, set it to Report-only, review the impact in the sign-in logs, then enable it. Turn security defaults off once the policies are on. Policies for Entra ID P2 and the Tier 0 authentication context need the matching role settings in Privileged Identity Management.' $doc $docText
+}
+
+function Step-PrivilegedAccess {
+    Write-Step 'Administrator roles and access reviews' 'Few permanent Global Administrators, eligible (just-in-time) roles and regular reviews.'
+    $doc = $GuideBase + '#admin-role-review'
+    $docText = 'ALSO guide: Review administrator roles (Identity and access, step 4)'
+    $lic = Get-LicenseTier
+    $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/RolesManagementMenuBlade/~/AllRoles'
+    $gaId = '62e90394-69f5-4237-9190-012177145e10'
+    $active = $null
+    try {
+        $inst = @(Get-AllPages ('https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignmentScheduleInstances?$filter=' + [uri]::EscapeDataString("roleDefinitionId eq '$gaId'")))
+        $active = @($inst | Where-Object { $_.assignmentType -eq 'Assigned' } | ForEach-Object { $_.principalId } | Sort-Object -Unique)
+    }
+    catch {
+        try { $active = @(Get-AllPages ('https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$filter=' + [uri]::EscapeDataString("roleDefinitionId eq '$gaId'")) | ForEach-Object { $_.principalId } | Sort-Object -Unique) } catch { }
+    }
+    $gaWhy = 'Global Administrators can change everything. Keep permanent assignments to a minimum (at most 5, including the two break-glass accounts) and give everyone else eligible, time-limited access through Privileged Identity Management.'
+    if ($null -eq $active) { Add-Result 'PrivilegedAccess' 'Permanent Global Administrators' 'Could not be read' '5 or fewer' Manual $link $gaWhy $doc $docText }
+    elseif ($active.Count -le 5) { Add-Result 'PrivilegedAccess' 'Permanent Global Administrators' "$($active.Count)" '5 or fewer' Compliant $link $gaWhy $doc $docText }
+    else { Add-Result 'PrivilegedAccess' 'Permanent Global Administrators' "$($active.Count)" '5 or fewer' Manual $link "$gaWhy Review the list and convert surplus accounts to eligible or remove the role." $doc $docText }
+
+    if ($lic.Tier -eq 'Full' -or $lic.HasP2) {
+        try {
+            $elig = @(Get-AllPages 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances')
+            Add-Result 'PrivilegedAccess' 'Eligible (just-in-time) role assignments' "$($elig.Count)" 'Used for day-to-day administration' Info $link 'Eligible assignments must be activated (with MFA and a reason) before they work, which limits the time an admin account is powerful.' $doc $docText
+        }
+        catch { Add-Result 'PrivilegedAccess' 'Eligible (just-in-time) role assignments' 'Could not be read' 'Used for day-to-day administration' Manual $link 'Open Privileged Identity Management and check that administrators use eligible assignments.' $doc $docText }
+        $arDoc = $GuideBase + '#access-reviews'
+        $arText = 'ALSO guide: Access reviews (Extend identity, step 2)'
+        try {
+            $ar = @(Get-AllPages 'https://graph.microsoft.com/v1.0/identityGovernance/accessReviews/definitions')
+            if ($ar.Count) { Add-Result 'PrivilegedAccess' 'Access reviews' "$($ar.Count) review(s) configured" 'At least one recurring review for privileged roles and guests' Compliant 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement' 'Regular reviews remove access that is no longer needed.' $arDoc $arText }
+            else { Add-Result 'PrivilegedAccess' 'Access reviews' 'None configured' 'At least one recurring review for privileged roles and guests' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement' 'Create recurring access reviews for privileged roles, guest users and sensitive groups. Reviews cannot be created from the baseline files because they depend on your reviewers.' $arDoc $arText }
+        }
+        catch { Add-Result 'PrivilegedAccess' 'Access reviews' 'Could not be read' 'At least one recurring review' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement' 'Open Identity Governance and check access reviews for privileged roles and guests.' $arDoc $arText }
+    }
+    else {
+        Add-Result 'PrivilegedAccess' 'Eligible roles and access reviews' 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'Privileged Identity Management and access reviews need Entra ID P2, so this part is skipped.' ($GuideBase + '#access-reviews') 'ALSO guide: Access reviews (Extend identity, step 2)'
+    }
+    Add-Result 'PrivilegedAccess' 'Review application owners and admin role holders' 'Cannot be judged automatically' 'Reviewed and documented' Manual $link 'Check every administrator and the owners of enterprise applications. Remove people who do not need access. Need4Admin (linked in the ALSO guide) lists administrators and their roles in one report.' $doc $docText
+}
+
+function Get-IntunePlatform($Json, $File) {
+    $t = "$($Json.'@odata.type')"; $pl = "$($Json.platforms)"
+    if ($pl -match 'windows' -or $t -match 'windows|win32') { return 'windows' }
+    if ($pl -match 'macOS' -or $t -match 'macOS') { return 'macos' }
+    if ($t -match 'ios' -or $pl -match 'ios') { return 'ios' }
+    if ($t -match 'android|aosp' -or $pl -match 'android|aosp') { return 'android' }
+    if ($File.FullName -match 'macOS|[ _-]Mac[ _-]') { return 'macos' }
+    return 'other'
+}
+
+function Get-IntuneTarget($Json) {
+    $b = 'https://graph.microsoft.com/beta/'
+    $t = "$($Json.'@odata.type')"
+    if ($t -match 'mobileApp|win32|macOSLobApp|macOSDmg|macOSPkg') { return $null }
+    if ($null -ne $Json.settings -and $Json.platforms) { return $b + 'deviceManagement/configurationPolicies' }
+    if ($t -match 'iosManagedAppProtection') { return $b + 'deviceAppManagement/iosManagedAppProtections' }
+    if ($t -match 'androidManagedAppProtection') { return $b + 'deviceAppManagement/androidManagedAppProtections' }
+    if ($t -match 'CompliancePolicy') { return $b + 'deviceManagement/deviceCompliancePolicies' }
+    if ($t -match 'Configuration$') { return $b + 'deviceManagement/deviceConfigurations' }
+    return $null
+}
+
+function Step-IntunePolicies {
+    Write-Step 'Intune policy baseline' 'Imports ALSO''s compliance, app protection, device security, Defender and browser policies (unassigned).'
+    $all = 'windows', 'macos', 'ios', 'android'
+    $sel = $all
+    if ($Mode -eq 'Enforce' -and -not $Force) {
+        $in = Read-Host '   Platforms to import: windows, macos, ios, android (comma separated, Enter = all)'
+        if ($in -and $in.Trim()) { $sel = @($in -split '[ ,;]+' | Where-Object { $_ } | ForEach-Object { $_.ToLower() }) }
+    }
+    Write-Host "   Platforms: $($sel -join ', ')" -ForegroundColor DarkGray
+    $pk = [ordered]@{
+        'device-compliance'   = @('Device compliance policies', '#compliance', 'ALSO guide: Device compliance (Endpoints, step 9)')
+        'app-protection'      = @('App protection policies (iOS and Android)', '#app-protection', 'ALSO guide: App protection (Endpoints, step 8)')
+        'device-security'     = @('Device security: BitLocker and local admin passwords (LAPS)', '#local-admin', 'ALSO guide: Local admin and LAPS (Endpoints, step 4)')
+        'defender-onboarding' = @('Defender for Endpoint onboarding profiles', '#defender-onboarding', 'ALSO guide: Defender provisioning and onboarding (Endpoints, step 10)')
+        'defender-security'   = @('Defender and firewall baseline', '#endpoint-baseline', 'ALSO guide: Defender and firewall minimum configuration (Endpoints, step 11)')
+        'browser-protection'  = @('Microsoft Edge browser protection', '#browser', 'ALSO guide: Browser protection (Endpoints, step 12)')
+    }
+    $link = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview'
+    $nameCache = @{}
+    $manualBits = @()
+    foreach ($pkg in $pk.Keys) {
+        $meta = $pk[$pkg]; $doc = $GuideBase + $meta[1]
+        try { $dir = Get-GuidePackage $pkg }
+        catch { Add-Result 'IntunePolicies' $meta[0] "Package could not be downloaded: $($_.Exception.Message)" 'Imported' Manual $link 'Download the policy package from the ALSO guide and import it in Intune.' $doc $meta[2]; continue }
+        $items = @()
+        foreach ($x in (Get-PackageJson $dir $null)) {
+            if ($x.File.Name -eq 'MigrationTable.json') { continue }
+            $t = "$($x.Json.'@odata.type')"
+            if ($t -match 'mobileApp|LobApp|macOSDmg|macOSPkg' -or $x.File.Directory.Name -eq 'Applications') { $manualBits += "$($x.Json.displayName)"; continue }
+            if ($x.File.Name -match 'Auto Onboarding') { $manualBits += "$($x.File.BaseName) (tenant-specific onboarding file)"; continue }
+            $target = Get-IntuneTarget $x.Json
+            if (-not $target) { continue }
+            $plat = Get-IntunePlatform $x.Json $x.File
+            if ($plat -ne 'other' -and $plat -notin $sel) { continue }
+            $nm = if ($x.Json.displayName) { $x.Json.displayName } else { $x.Json.name }
+            if (-not $nameCache.ContainsKey($target)) {
+                $nameCache[$target] = @(Get-AllPages $target | ForEach-Object { if ($_.displayName) { $_.displayName } else { $_.name } })
+            }
+            $items += [pscustomobject]@{ Name = $nm; Target = $target; Json = $x.Json; Have = ($nm -in $nameCache[$target]) }
+        }
+        if (-not $items.Count) { continue }
+        $miss = @($items | Where-Object { -not $_.Have })
+        $detail = 'Policies are created unassigned, so nothing changes on devices yet. Assign each policy to a pilot group, check the results, then widen the scope. Missing: ' + $(if ($miss) { ($miss | ForEach-Object { $_.Name }) -join '; ' } else { 'nothing' })
+        Compare-Setting 'IntunePolicies' $meta[0] "$($items.Count - $miss.Count) of $($items.Count) present" "$($items.Count) of $($items.Count) present" {
+            $fail = @()
+            foreach ($m in $miss) {
+                try { Graph POST $m.Target (ConvertTo-CleanBody $m.Json) | Out-Null; Write-Host "   Imported: $($m.Name)" -ForegroundColor DarkGray }
+                catch { $fail += "$($m.Name): $($_.Exception.Message)" }
+            }
+            if ($fail.Count) { throw ('Not imported: ' + ($fail -join ' | ')) }
+        } $link $detail $doc $meta[2]
+    }
+    if ($manualBits.Count) {
+        Add-Result 'IntunePolicies' 'Defender for Endpoint macOS app and tenant-specific onboarding files' ($manualBits -join '; ') 'Added by an administrator' Manual 'https://security.microsoft.com/securitysettings/endpoints/onboarding' 'The macOS Defender app is a software package and the macOS onboarding file contains a key that belongs to one tenant. Download the onboarding package from the Defender portal (Settings > Endpoints > Onboarding), then add the app and profile in Intune.' ($GuideBase + '#defender-onboarding') 'ALSO guide: Defender provisioning and onboarding (Endpoints, step 10)'
+    }
+    if ($sel -contains 'ios' -or $sel -contains 'macos') {
+        $apDoc = $GuideBase + '#apple-enrollment'
+        $apText = 'ALSO guide: Supported platforms and Apple enrollment (Endpoints, step 3)'
+        $apLink = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/appleEnrollment'
+        try {
+            $apns = Graph GET 'https://graph.microsoft.com/beta/deviceManagement/applePushNotificationCertificate'
+            $days = ([datetime]$apns.expirationDateTime - (Get-Date)).Days
+            if ($days -lt 0) { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Expired on $(([datetime]$apns.expirationDateTime).ToString('yyyy-MM-dd'))" 'Valid' Manual $apLink 'iPhones, iPads and Macs stop syncing with Intune when this certificate expires. Renew it with the same Apple ID that created it.' $apDoc $apText }
+            elseif ($days -lt 30) { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Expires in $days days" 'Valid for 30 days or more' Manual $apLink 'Renew the certificate with the same Apple ID that created it before it expires.' $apDoc $apText }
+            else { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Valid until $(([datetime]$apns.expirationDateTime).ToString('yyyy-MM-dd'))" 'Valid' Compliant $apLink 'Needed to manage iPhones, iPads and Macs.' $apDoc $apText }
+        }
+        catch { Add-Result 'IntunePolicies' 'Apple MDM push certificate' 'Not configured' 'Configured (only needed for iPhone, iPad and Mac)' Manual $apLink 'Apple devices can only be managed after you create an MDM push certificate in Intune with an Apple ID owned by your company. Skip this if you do not manage Apple devices.' $apDoc $apText }
+    }
+    try {
+        $er = @(Get-AllPages 'https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations' | Where-Object { "$($_.'@odata.type')" -match 'PlatformRestriction' })
+        Add-Result 'IntunePolicies' 'Enrollment platform restrictions' "$($er.Count) restriction policy(ies)" 'Only supported platforms can enroll' Info 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/restrictions' 'Limit enrollment to the platforms you support and decide whether personally owned devices may enroll.' ($GuideBase + '#apple-enrollment') 'ALSO guide: Supported platforms (Endpoints, step 3)'
+    }
+    catch { }
+}
+
+function Step-Purview {
+    Write-Step 'Microsoft Purview baseline' 'Checks whether ALSO''s sensitivity labels, label policy, DLP and retention policies exist.'
+    $repo = 'https://github.com/CoC-MS/ALSO-Microsoft-Security-Purview'
+    $doc = $GuideBase + '#purview-baseline'
+    $docText = 'ALSO guide: Purview baseline (Data security and governance, step 1)'
+    $link = 'https://purview.microsoft.com/informationprotection/labels'
+    $tier = (Get-LicenseTier).Tier
+    $deploy = "Deploy with ALSO's Purview toolkit ($repo): run Deploy-PurviewBestPractice.ps1 in PowerShell 7 or later from the complete repository folder, review PurviewConfig.psd1 first and start with -WhatIf. DLP policies start in simulation mode."
+    $chk = {
+        param($Setting, $Ok, $Cur, $Exp, $Detail, $Lnk)
+        if ($Ok) { Add-Result 'Purview' $Setting $Cur $Exp Compliant $Lnk $Detail $doc $docText }
+        else { Add-Result 'Purview' $Setting $Cur $Exp Manual $Lnk "$Detail $deploy" $doc $docText }
+    }
+    try {
+        $labels = @(Get-Label -ErrorAction Stop | ForEach-Object { $_.DisplayName })
+        $want = 'Public', 'General', 'Confidential', 'Highly Confidential'
+        $miss = @($want | Where-Object { $_ -notin $labels })
+        & $chk 'Sensitivity labels (Public, General, Confidential, Highly Confidential)' ($miss.Count -eq 0) $(if ($miss) { "Missing: $($miss -join ', ')" } else { 'All present' }) 'All four labels present' 'Labels classify documents and e-mail so protection can follow the data.' $link
+    }
+    catch { Add-Result 'Purview' 'Sensitivity labels' "Not readable: $($_.Exception.Message)" 'Labels present' Manual $link "Check the labels in the Purview portal. $deploy" $doc $docText }
+    try {
+        $lp = @(Get-LabelPolicy -ErrorAction Stop | ForEach-Object { $_.Name })
+        $has = $lp -contains 'BP-ALSO - Default Label Policy'
+        & $chk 'Label policy (BP-ALSO - Default Label Policy)' $has $(if ($has) { 'Present' } else { 'Not found' }) 'Present' 'The label policy publishes the labels to users and sets the default label.' $link
+    }
+    catch { Add-Result 'Purview' 'Label policy' "Not readable: $($_.Exception.Message)" 'Present' Manual $link "Check the label policy in the Purview portal. $deploy" $doc $docText }
+    $dlpLink = 'https://purview.microsoft.com/datalossprevention/policies'
+    try {
+        $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop)
+        $bp = @($dlp | Where-Object { $_.Name -like 'BP-ALSO - DLP*' })
+        & $chk 'Baseline data loss prevention policies (BP-ALSO - DLP)' ($bp.Count -gt 0) $(if ($bp.Count) { "$($bp.Count) policy(ies)" } else { 'Not found' }) 'Present' 'DLP policies warn or block when sensitive data such as card numbers, IBAN or social security numbers is shared.' $dlpLink
+        if ($tier -eq 'Full') {
+            $e5 = @($dlp | Where-Object { $_.Name -like 'E5-PS-ALSO*' })
+            & $chk 'Advanced DLP policies (E5-PS-ALSO: endpoint DLP and Copilot protection)' ($e5.Count -gt 0) $(if ($e5.Count) { "$($e5.Count) policy(ies)" } else { 'Not found' }) 'Present' 'Endpoint DLP and the policy that blocks Copilot from processing Highly Confidential content need Microsoft 365 E5 or the Purview suite.' $dlpLink
+        }
+        else { Add-Result 'Purview' 'Advanced DLP policies (E5-PS-ALSO)' 'Not licensed' 'Requires Microsoft 365 E5, E7 or the Purview suite' Skipped $dlpLink 'Endpoint DLP and Copilot protection need Microsoft 365 E5, E7 or the Purview suite.' $doc $docText }
+        $sim = @(($bp + @($dlp | Where-Object { $_.Name -like 'E5-PS-ALSO*' })) | Where-Object { $_.Mode -ne 'Enable' })
+        if ($sim.Count) { Add-Result 'Purview' 'DLP policies still in simulation mode' "$($sim.Count) policy(ies): $(($sim | ForEach-Object { $_.Name }) -join '; ')" 'Turned on after reviewing the simulation results' Manual $dlpLink 'The baseline starts every DLP policy in simulation mode. Review the matches in Activity explorer, then switch each policy to On.' $doc $docText }
+    }
+    catch { Add-Result 'Purview' 'Data loss prevention policies' "Not readable: $($_.Exception.Message)" 'Present' Manual $dlpLink "Check the DLP policies in the Purview portal. $deploy" $doc $docText }
+    try {
+        $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop | Where-Object { $_.Name -like 'BP-ALSO*' })
+        Add-Result 'Purview' 'Optional retention policy (BP-ALSO - Exchange 7-year retention)' $(if ($ret.Count) { 'Present' } else { 'Not deployed' }) 'Only after legal review' Info 'https://purview.microsoft.com/datalifecyclemanagement/policies' 'Retention keeps mail for years and cannot easily be reversed. It is optional and should only be switched on after a legal and compliance review.' $doc $docText
+    }
+    catch { }
+    Add-Result 'Purview' 'Tenant switches for labels: PDF labeling, labels in SharePoint and OneDrive, co-authoring' 'Cannot be read automatically' 'Turned on' Manual 'https://purview.microsoft.com/informationprotection/labels' 'Turn on labels for Office and PDF files in SharePoint and OneDrive (including co-authoring) in the Purview portal under Information Protection > Labels. The toolkit documentation lists the exact switches.' $doc $docText
+}
+
+function Step-GuideManual {
+    Write-Step 'Remaining guide steps (manual)' 'Steps in the ALSO guide that need people or portal-only decisions.'
+    $rows = @(
+        @('Data Access Governance report (find oversharing before Copilot)', 'Not started', 'Run and reviewed', 'https://admin.microsoft.com/sharepoint?page=dataAccessGovernance', 'Data Access Governance reports show sites with broad sharing or sensitive content. Review the reports and fix oversharing before enabling Copilot.', '#data-access-governance', 'ALSO guide: Data Access Governance (Identity and access, step 8)'),
+        @('Self-service password reset pilot', 'Cannot be judged automatically', 'Enabled for a pilot group, then everyone', 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/PasswordResetMenuBlade/~/Properties', 'Self-service password reset reduces help desk calls. Start with a pilot group, confirm that users have registered methods, then widen the scope.', '#sspr', 'ALSO guide: Self-service password reset (Identity and access, step 9)'),
+        @('Apple Business Manager / automated device enrollment', 'Cannot be checked automatically', 'Connected if you manage Apple devices', 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/appleEnrollment', 'Apple Business Manager lets you enroll company iPhones, iPads and Macs automatically. It needs an Apple ID and a decision by your organization.', '#apple-enrollment', 'ALSO guide: Supported platforms and Apple enrollment (Endpoints, step 3)'),
+        @('Assign the imported Intune policies to pilot groups', 'Imported policies have no assignments', 'Assigned to a pilot group, then widened', 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview', 'Who gets each policy is your decision. Assign to a pilot group first, review reports for conflicts, then widen.', '#compliance', 'ALSO guide: Device compliance (Endpoints, step 9)'),
+        @('Information protection classification and user training', 'Not started', 'Labels explained to users', 'https://purview.microsoft.com/informationprotection/labels', 'Labels only protect data when people use them. Explain the label meanings and let users practice before enforcing.', '#classification', 'ALSO guide: Classification (Data security and governance, step 2)'),
+        @('Restricted content discovery for Copilot', 'Cannot be read automatically', 'Applied to sensitive sites', 'https://admin.microsoft.com/sharepoint?page=sites', 'Restricted content discovery stops Copilot and search from surfacing content on selected SharePoint sites. Choose the sites together with the business.', '#restricted-content-discovery', 'ALSO guide: Restricted content discovery (Copilot preparation, step 1)'),
+        @('Copilot settings (web search, agents, data sharing)', 'Cannot be read automatically', 'Reviewed', 'https://admin.cloud.microsoft/?#/copilot/settings', 'Decide which Copilot features are allowed for your users and review agent and web search settings.', '#copilot-settings', 'ALSO guide: Copilot settings (Copilot preparation, step 2)'),
+        @('Copilot adoption and user guidance', 'Not started', 'Rollout plan with a pilot group and training', 'https://adoption.microsoft.com/copilot/', 'A pilot group, training and champions make the Copilot rollout successful. This is an organizational task.', '#copilot-adoption-guidance', 'ALSO guide: Copilot adoption guidance (Copilot preparation, step 3)')
+    )
+    foreach ($r in $rows) { Add-Result 'GuideManual' $r[0] $r[1] $r[2] Manual $r[3] $r[4] ($GuideBase + $r[5]) $r[6] }
+}
+
+#endregion
+
+$basicSkip = 'IntuneEnrollment', 'IntunePolicies', 'ConditionalAccess', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
 foreach ($s in $Steps) {
     if ($s -in $basicSkip) {
         $tier = $null
         try { $tier = (Get-LicenseTier).Tier } catch { }
         if ($tier -eq 'Basic') {
             Write-Step "$s (skipped)" 'Not part of Business Basic / Standard licenses.'
-            Add-Result $s 'Intune / Defender recommendations' 'Not included in Business Basic or Standard licenses' 'Requires Business Premium, E3/E5 or a Defender suite' Skipped $null 'Intune and the Defender products are not part of this license level, so these recommendations are skipped. Upgrade the license (for example Microsoft 365 Business Premium) to use them.'
+            Add-Result $s 'Intune, Conditional Access and Defender recommendations' 'Not included in Business Basic or Standard licenses' 'Requires Business Premium, E3/E5 or a Defender suite' Skipped $null 'Intune and the Defender products are not part of this license level, so these recommendations are skipped. Upgrade the license (for example Microsoft 365 Business Premium) to use them.'
             continue
         }
     }
@@ -684,6 +1063,8 @@ $cats = [ordered]@{
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
+    ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
+    IntunePolicies = 'Devices: Intune policy baseline'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
 $reportResults = @($script:Results | Where-Object Step -ne 'Licensing')

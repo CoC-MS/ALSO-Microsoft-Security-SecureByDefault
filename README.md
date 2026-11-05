@@ -24,7 +24,7 @@ Run a subset of steps with `-Steps AuditLog,Fido2`. Reports are written to `sbd-
 
 ## What it covers
 
-Unified audit log, Entra user and external collaboration settings, user consent, emergency access accounts (security group and restricted management administrative unit), FIDO2 and authentication methods, SharePoint sharing, Intune enrollment, Windows LAPS, Defender for Office 365 preset policies, and Defender for Business / Endpoint provisioning checks with Intune connection guidance.
+Unified audit log, Entra user and external collaboration settings, user consent, emergency access accounts (security group and restricted management administrative unit), FIDO2 and authentication methods, SharePoint sharing, Conditional Access baseline import (switched off), administrator role and access review checks, Intune enrollment, the Intune policy baseline (compliance, app protection, BitLocker, LAPS, Defender, Edge), Defender for Office 365 preset policies, Microsoft Purview baseline checks, and Defender for Business / Endpoint provisioning checks with Intune connection guidance.
 
 Expected values live in `config/reference-state.json`. Review them against your organization's requirements before enforcing.
 
