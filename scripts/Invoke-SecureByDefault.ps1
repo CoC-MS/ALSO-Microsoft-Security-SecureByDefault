@@ -215,7 +215,7 @@ function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clie
                 if ($cand -and ($cand['code'] -or $cand['error'])) {
                     $q = $cand
                     $ok = [bool]$q['code']
-                    $msg = if (-not $ok) { "Sign-in to $Service failed. Return to PowerShell for details." } elseif ($Next) { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>You can close this tab. The next sign-in, <b>$Next</b>, opens in a new browser window in a few seconds." } else { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>This was the <b>last</b> sign-in. You can close this tab and return to PowerShell." }
+                    $msg = if (-not $ok) { "Sign-in to $Service failed. Return to PowerShell for details." } elseif ($Next) { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>You can close this tab. Next: <b>$Next</b>. A new sign-in window opens in a few seconds (if you are already signed in with that service it may continue without a window)." } else { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>This was the <b>last</b> sign-in. You can close this tab and return to PowerShell." }
                     $body = [Text.Encoding]::UTF8.GetBytes("<html><head><title>ALSO Secure by Default</title></head><body style='font-family:Segoe UI;margin:3em'><h2>ALSO Secure by Default</h2><p>$msg</p></body></html>")
                     $hdr = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
                     $stream.Write($hdr, 0, $hdr.Length); $stream.Write($body, 0, $body.Length); $stream.Flush()
@@ -292,11 +292,13 @@ if ($needsPurview) {
     $script:SpoOk = $false
     try {
         Initialize-Module Microsoft.Online.SharePoint.PowerShell
+        Write-Host '  SharePoint uses Microsoft''s own sign-in. If you are already signed in with this account, no window opens and the existing session is reused. If a window does open, it may appear behind PowerShell.' -ForegroundColor DarkGray
         Connect-SPOService -Url $SharePointAdminUrl -ErrorAction Stop
+        $null = Get-SPOTenant -ErrorAction Stop
         $script:SpoOk = $true
-        Write-Host '  Signed in to SharePoint Online.' -ForegroundColor Green
+        Write-Host '  Connected to SharePoint Online (verified by reading the tenant settings).' -ForegroundColor Green
     }
-    catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label settings will be listed as manual checks." -ForegroundColor DarkGray }
+    catch { Write-Host "  SharePoint sign-in failed: $($_.Exception.Message)" -ForegroundColor Yellow; Write-Host '  The SharePoint label settings will be listed as manual checks.' -ForegroundColor Yellow }
 }
 #endregion
 
