@@ -600,29 +600,40 @@ $cats = [ordered]@{
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
 $total = @($script:Results).Count
-$cards = foreach ($st in 'Compliant', 'Fixed', 'Drift', 'Manual', 'Skipped', 'Error', 'Info') {
+$cards = foreach ($st in 'Compliant', 'Fixed', 'Drift', 'Manual', 'Info', 'Skipped', 'Error') {
     $n = @($script:Results | Where-Object Status -eq $st).Count
     "<div class='card $st'><b>$n</b><span>$($label[$st])</span></div>"
 }
-$sections = foreach ($cat in ($cats.Values | Select-Object -Unique)) {
-    $items = @($script:Results | Where-Object { $cats[$_.Step] -eq $cat })
+$buildSections = {
+    param([bool]$ManualOnly)
+    foreach ($cat in ($cats.Values | Select-Object -Unique)) {
+    $items = @($script:Results | Where-Object { $cats[$_.Step] -eq $cat -and (($_.Status -eq 'Manual') -eq $ManualOnly) })
     if (-not $items) { continue }
     $bad = @($items | Where-Object { $_.Status -in 'Drift', 'Error' }).Count
-    $badge = if ($bad) { "<span class='pill Drift'>$bad to fix</span>" } else { "<span class='pill Compliant'>all good</span>" }
+    $badge = if ($ManualOnly) { "<span class='pill Manual'>$($items.Count) to do</span>" } elseif ($bad) { "<span class='pill Drift'>$bad to fix</span>" } else { "<span class='pill Compliant'>all good</span>" }
     $rows = foreach ($r in $items) {
         $l = if ($r.Link) { "<a href='$(& $enc $r.Link)' target='_blank'>Open in portal &rarr;</a>" } else { '' }
         $d = if ($r.Detail) { "<div class='why'>$(& $enc $r.Detail)$(if ($r.Doc) { " <a href='$(& $enc $r.Doc)' target='_blank'>$(& $enc $r.DocText) &rarr;</a>" })</div>" } else { '' }
         "<tr><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b>$d</td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
     }
     "<section><h2>$(& $enc $cat) $badge</h2><table><tr><th>State</th><th>Setting</th><th>Current value</th><th>Expected</th><th></th></tr>$($rows -join '')</table></section>"
+    }
 }
+$autoSections = & $buildSections $false
+$manualSections = & $buildSections $true
+$manualCount = @($script:Results | Where-Object Status -eq 'Manual').Count
+$autoCount = $total - $manualCount
+$tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual actions ($manualCount)</button></div>"
+$manualIntro = "<p class='intro'>These items cannot be read or changed automatically because Microsoft offers no API for them, or they need a person to decide. Work through them in the portal using the links and guides.</p>"
+$js = "function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
 $css = @'
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fa;color:#1d2b3a}
 header{background:#fff;border-bottom:1px solid #dde3ea;padding:20px 40px}
 header h1{margin:0;font-size:1.5rem}header p{margin:4px 0 0;color:#5b6b7c}
 main{max-width:1200px;margin:24px auto;padding:0 24px}
-.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
-.card{flex:1;min-width:130px;background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:14px 18px;border-top:4px solid #9aa7b4}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:24px}
+.tabs{display:flex;gap:8px;margin-bottom:18px;border-bottom:2px solid #dde3ea}.tab{background:none;border:0;padding:10px 18px;font-size:1rem;font-weight:600;color:#5b6b7c;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px}.tab.on{color:#00757d;border-bottom-color:#00757d}.intro{color:#5b6b7c;max-width:820px}
+.card{min-width:0;background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:14px 18px;border-top:4px solid #9aa7b4}
 .card b{display:block;font-size:1.8rem}.card span{color:#5b6b7c;font-size:.85rem}
 .card.Compliant,.card.Fixed{border-top-color:#2e8b57}.card.Drift{border-top-color:#d98e04}.card.Manual{border-top-color:#00757d}.card.Error{border-top-color:#c0392b}
 section{background:#fff;border:1px solid #dde3ea;border-radius:10px;margin-bottom:20px;padding:6px 18px 14px}
@@ -635,7 +646,7 @@ td{padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:
 .pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
 '@
 $nextBox = if ($Mode -eq 'Enforce') { "<div class='next'><h2>Done reviewing these settings? Continue with deeper configuration.</h2><p>Secure by Default sets the tenant-wide prerequisites. Next, use the ALSO Microsoft Security Policy Templates Navigator to choose the policy templates and configuration that fit your licenses and platforms.</p><a class='btn' href='https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' target='_blank'>Open the Navigator &rarr;</a></div>" } else { '' }
-$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$($sections -join '')$nextBox</main></body></html>"
+$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$tabs<div class='pane' id='auto'>$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
 [IO.File]::WriteAllText($html, $page, (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "`nSummary:" -ForegroundColor Cyan
