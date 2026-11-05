@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -40,10 +40,10 @@
   <h2 class="reveal">Why Secure by Default</h2>
   <p class="sub reveal">ALSO's JSON configuration files cover policies and baselines. Some prerequisites live outside them: tenant switches, emergency access, authentication methods, enrollment and connector state. This tool closes that gap.</p>
   <div class="grid">
-    <div class="card reveal"><div class="ic">ðŸ”</div><h3>Discover before enforce</h3><p>Default mode is strictly read-only and produces a drift report against the reference state.</p></div>
-    <div class="card reveal"><div class="ic">ðŸ§­</div><h3>Guided step by step</h3><p>Each change is explained and confirmed. Supports <code>-WhatIf</code> for dry runs.</p></div>
-    <div class="card reveal"><div class="ic">ðŸ›¡ï¸</div><h3>Safe by design</h3><p>Passwords are never logged or written to reports; risky policies start in report-only.</p></div>
-    <div class="card reveal"><div class="ic">âš™ï¸</div><h3>Best-supported tooling</h3><p>PowerShell for full coverage, native Microsoft365DSC for declarative drift control, Python for cross-platform Graph checks.</p></div>
+    <div class="card reveal"><div class="ic">🔍</div><h3>Discover before enforce</h3><p>Default mode is strictly read-only and produces a drift report against the reference state.</p></div>
+    <div class="card reveal"><div class="ic">🧭</div><h3>Guided step by step</h3><p>Each change is explained and confirmed. Supports <code>-WhatIf</code> for dry runs.</p></div>
+    <div class="card reveal"><div class="ic">🛡️</div><h3>Safe by design</h3><p>Passwords are never logged or written to reports; risky policies start in report-only.</p></div>
+    <div class="card reveal"><div class="ic">⚙️</div><h3>Best-supported tooling</h3><p>PowerShell for full coverage, native Microsoft365DSC for declarative drift control, Python for cross-platform Graph checks.</p></div>
   </div>
 </section>
 
@@ -51,15 +51,15 @@
   <h2 class="reveal">What it covers</h2>
   <p class="sub reveal">Automated where an API exists; otherwise the report links straight to the right portal blade.</p>
   <div class="grid">
-    <div class="card reveal"><div class="ic">ðŸ“œ</div><h3>Unified audit log</h3><p>Check and activate ingestion.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸ‘¤</div><h3>Entra user &amp; guest settings</h3><p>App registration, tenant creation, security groups, guest access, admin center.</p><span class="tag auto">automated</span><span class="tag man">partly portal</span></div>
-    <div class="card reveal"><div class="ic">âœ…</div><h3>Consent &amp; admin workflow</h3><p>Low-impact user consent and admin consent requests.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸš¨</div><h3>Break-glass accounts</h3><p>Two onmicrosoft.com Global Admins, security group, restricted-management administrative unit.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸ”‘</div><h3>Passkeys / FIDO2</h3><p>Enable FIDO2 and review all authentication methods.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸ“</div><h3>SharePoint &amp; OneDrive sharing</h3><p>Tenant sharing level, default link type, link expiry.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸ’»</div><h3>Intune enrollment &amp; LAPS</h3><p>MDM auto-enrollment scope, local admin rights, Entra LAPS.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸ“§</div><h3>Defender for Office 365</h3><p>Standard and Strict preset policies and their recipients.</p><span class="tag auto">automated</span></div>
-    <div class="card reveal"><div class="ic">ðŸ›°ï¸</div><h3>Defender for Endpoint</h3><p>Provisioning, Intune connection, connector status, alerts, Defender for Identity, app governance.</p><span class="tag auto">checks</span><span class="tag man">guided</span></div>
+    <div class="card reveal"><div class="ic">📜</div><h3>Unified audit log</h3><p>Check and activate ingestion.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">👤</div><h3>Entra user &amp; guest settings</h3><p>App registration, tenant creation, security groups, guest access, admin center.</p><span class="tag auto">automated</span><span class="tag man">partly portal</span></div>
+    <div class="card reveal"><div class="ic">✅</div><h3>Consent &amp; admin workflow</h3><p>Low-impact user consent and admin consent requests.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">🚨</div><h3>Break-glass accounts</h3><p>Two onmicrosoft.com Global Admins, security group, restricted-management administrative unit.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">🔑</div><h3>Passkeys / FIDO2</h3><p>Enable FIDO2 and review all authentication methods.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">📁</div><h3>SharePoint &amp; OneDrive sharing</h3><p>Tenant sharing level, default link type, link expiry.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">💻</div><h3>Intune enrollment &amp; LAPS</h3><p>MDM auto-enrollment scope, local admin rights, Entra LAPS.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">📧</div><h3>Defender for Office 365</h3><p>Standard and Strict preset policies and their recipients.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">🛰️</div><h3>Defender for Endpoint</h3><p>Provisioning, Intune connection, connector status, alerts, Defender for Identity, app governance.</p><span class="tag auto">checks</span><span class="tag man">guided</span></div>
   </div>
 </section>
 
@@ -67,9 +67,9 @@
   <h2 class="reveal">Three engines, one reference state</h2>
   <p class="sub reveal">All engines read <code>config/reference-state.json</code>. Pick the one that fits your tenant operations.</p>
   <div class="grid">
-    <div class="card reveal"><div class="ic">âš¡</div><h3>PowerShell orchestrator</h3><p>Guided, interactive and complete: Graph, Exchange Online and SharePoint Online in one run with HTML/JSON reports.</p><span class="tag ps">scripts/Invoke-SecureByDefault.ps1</span></div>
-    <div class="card reveal"><div class="ic">ðŸ§¬</div><h3>Native Microsoft365DSC</h3><p>Declarative baseline using DSC resources (<code>AADAuthorizationPolicy</code>, <code>AADAuthenticationMethodPolicyFido2</code>, <code>O365AdminAuditLogConfig</code>, <code>SPOSharingSettings</code>, <code>AADDeviceRegistrationPolicy</code>). Discover with <code>Test-DscConfiguration</code>, enforce with <code>Start-DscConfiguration</code>.</p><span class="tag dsc">scripts/Invoke-SecureByDefaultDsc.ps1</span></div>
-    <div class="card reveal"><div class="ic">ðŸ</div><h3>Python (Graph-only)</h3><p>Cross-platform checks and fixes for Entra, consent, FIDO2, LAPS and Intune enrollment. Ideal for CI and Linux/macOS. Exchange and SharePoint stay in PowerShell.</p><span class="tag py">python/sbd_graph.py</span></div>
+    <div class="card reveal"><div class="ic">⚡</div><h3>PowerShell orchestrator</h3><p>Guided, interactive and complete: Graph, Exchange Online and SharePoint Online in one run with HTML/JSON reports.</p><span class="tag ps">scripts/Invoke-SecureByDefault.ps1</span></div>
+    <div class="card reveal"><div class="ic">🧬</div><h3>Native Microsoft365DSC</h3><p>Declarative baseline using DSC resources (<code>AADAuthorizationPolicy</code>, <code>AADAuthenticationMethodPolicyFido2</code>, <code>O365AdminAuditLogConfig</code>, <code>SPOSharingSettings</code>, <code>AADDeviceRegistrationPolicy</code>). Discover with <code>Test-DscConfiguration</code>, enforce with <code>Start-DscConfiguration</code>.</p><span class="tag dsc">scripts/Invoke-SecureByDefaultDsc.ps1</span></div>
+    <div class="card reveal"><div class="ic">🐍</div><h3>Python (Graph-only)</h3><p>Cross-platform checks and fixes for Entra, consent, FIDO2, LAPS and Intune enrollment. Ideal for CI and Linux/macOS. Exchange and SharePoint stay in PowerShell.</p><span class="tag py">python/sbd_graph.py</span></div>
   </div>
 </section>
 
