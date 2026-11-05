@@ -1442,7 +1442,7 @@ function Step-Purview {
 
         $g2 = 'ALSO baseline (suggested): Sensitivity labels'; $g2x = 'Your existing tenant: Sensitivity labels'
         $labels = @()
-        try { $labels = @(Get-Label -ErrorAction Stop) } catch { & $addRow $g2 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'Make sure the signed-in account is Global Administrator or Compliance Administrator.' $lbl $false }
+        Write-Host '   ...reading sensitivity labels' -ForegroundColor DarkGray; try { $labels = @(Get-Label -ErrorAction Stop) } catch { & $addRow $g2 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'Make sure the signed-in account is Global Administrator or Compliance Administrator.' $lbl $false }
         $find = { param($c, $parent)
             $labels | Where-Object { ($_.Name -eq $c.Name -or $_.DisplayName -eq $c.DisplayName) -and $(if ($parent) { "$($_.ParentId)" -eq "$($parent.Guid)" } else { -not $_.ParentId }) } | Select-Object -First 1 }
         $resolved = @{}
@@ -1469,7 +1469,7 @@ function Step-Purview {
 
         $g3 = 'ALSO baseline (suggested): Label policy'; $g3x = 'Your existing tenant: Label policies'
         try {
-            $lps = @(Get-LabelPolicy -ErrorAction Stop)
+            Write-Host '   ...reading label policies' -ForegroundColor DarkGray; $lps = @(Get-LabelPolicy -ErrorAction Stop)
             $c = $config.LabelPolicy
             $lp = $lps | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             $d = @()
@@ -1495,7 +1495,7 @@ function Step-Purview {
         catch { & $addRow $g3 'Label policy' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $lpL $false }
 
         $dlp = @(); $rules = @()
-        try { $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop); $rules = @(Get-DlpComplianceRule -ErrorAction Stop) }
+        Write-Host '   ...reading DLP policies and rules (can take a few minutes)' -ForegroundColor DarkGray; try { $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop); $rules = @(Get-DlpComplianceRule -ErrorAction Stop) }
         catch { & $addRow $g7 'Data loss prevention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $dlpL $false }
         $rulesOf = { param($n) $rules | Where-Object { "$($_.ParentPolicyName)" -eq $n -or "$($_.Policy)" -eq $n } }
         $sitJson = { param($r) if ($r) { ($r | ForEach-Object { $_.ContentContainsSensitiveInformation } | ConvertTo-Json -Depth 12 -Compress) } else { '' } }
@@ -1568,7 +1568,7 @@ function Step-Purview {
 
         $g8 = 'ALSO baseline (suggested): Retention (optional)'; $g8x = 'Your existing tenant: Retention policies'
         try {
-            $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop)
+            Write-Host '   ...reading retention policies' -ForegroundColor DarkGray; $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop)
             $c = $config.Retention
             $p = $ret | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             if ($p) {
