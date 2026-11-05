@@ -524,7 +524,7 @@ function Step-BreakGlass {
             if (Confirm-Change "Create break-glass account $upn") {
                 $pw = New-StrongPassword
                 $u = Graph POST 'https://graph.microsoft.com/v1.0/users' @{
-                    accountEnabled = $true; displayName = "Emergency Access $n"; mailNickname = $n; userPrincipalName = $upn
+                    accountEnabled = $true; displayName = $n; mailNickname = $n; userPrincipalName = $upn
                     passwordPolicies = 'DisablePasswordExpiration'; passwordProfile = @{ password = $pw; forceChangePasswordNextSignIn = $false }
                 }
                 Write-Host "   >>> ONE-TIME PASSWORD for ${upn}: $pw  (store offline now; not shown again)" -ForegroundColor Black -BackgroundColor Yellow
@@ -542,7 +542,7 @@ function Step-BreakGlass {
     Invoke-Part 'BreakGlass' 'Security group' {
         $script:bgG = (Graph GET "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$BreakGlassGroupName'").value | Select-Object -First 1
         if (-not $script:bgG -and (Confirm-Change "Create security group $BreakGlassGroupName")) {
-            $script:bgG = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $BreakGlassGroupName; mailNickname = ($BreakGlassGroupName -replace '\W', ''); mailEnabled = $false; securityEnabled = $true; description = 'Emergency access accounts' }
+            $script:bgG = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $BreakGlassGroupName; mailNickname = ($BreakGlassGroupName -replace '\W', ''); mailEnabled = $false; securityEnabled = $true; description = 'Protected service accounts' }
             Add-Result 'BreakGlass' "Security group $BreakGlassGroupName exists" 'No' 'Created' Fixed $null
         }
         elseif ($script:bgG) { Add-Result 'BreakGlass' "Security group $BreakGlassGroupName exists" 'Yes' 'Yes' Compliant $null }
@@ -585,7 +585,7 @@ function Step-BreakGlass {
     Invoke-Part 'BreakGlass' 'Administrative unit' {
         $script:bgAu = (Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$BreakGlassAuName'").value | Select-Object -First 1
         if (-not $script:bgAu -and (Confirm-Change "Create restricted-management AU $BreakGlassAuName")) {
-            $script:bgAu = Graph POST 'https://graph.microsoft.com/v1.0/directory/administrativeUnits' @{ displayName = $BreakGlassAuName; description = 'Protects emergency access objects'; isMemberManagementRestricted = $true }
+            $script:bgAu = Graph POST 'https://graph.microsoft.com/v1.0/directory/administrativeUnits' @{ displayName = $BreakGlassAuName; description = 'Protects critical access objects'; isMemberManagementRestricted = $true }
             Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'No' 'Created (restricted)' Fixed $auLink
         }
         elseif ($script:bgAu) {
