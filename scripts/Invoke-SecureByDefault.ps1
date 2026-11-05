@@ -948,9 +948,7 @@ function Step-ConditionalAccess {
             $byCfg = $null
             if (-not $byName) { $fp = Get-CaFingerprint $p.Json $false; $byCfg = $existing | Where-Object { $exFp["$($_.id)"] -eq $fp } | Select-Object -First 1 }
             $wfp = Get-CaFingerprint $p.Json $false
-            $sim = $null
-            if (-not $byName -and -not $byCfg) { $sim = Find-SimilarPolicy $wfp @($existing | ForEach-Object { [pscustomobject]@{ Name = $_.displayName; Fp = $exFp["$($_.id)"] } }) }
-            [pscustomobject]@{ P = $p; Name = $nm; ByName = $byName; ByCfg = $byCfg; Fp = $wfp; Sim = $sim }
+            [pscustomobject]@{ P = $p; Name = $nm; ByName = $byName; ByCfg = $byCfg }
         })
     $missing = @($rows | Where-Object { -not $_.ByName -and -not $_.ByCfg })
     $map = @{}
@@ -1006,14 +1004,11 @@ function Step-ConditionalAccess {
     foreach ($r in $rows) {
         $nm = $r.Name
         if ($r.ByName) {
-            $cmp = Compare-Fingerprints $exFp["$($r.ByName.id)"] $r.Fp
-            if ($cmp.Percent -eq 100) { Add-Result 'ConditionalAccess' $nm "Present - $($stateTxt["$($r.ByName.state)"]). Same settings as ALSO" 'Present' Compliant $link $why $doc $docText }
-            else { Add-Result 'ConditionalAccess' $nm "Present - $($stateTxt["$($r.ByName.state)"])`n$(Format-Comparison $cmp)" 'Present' Info $link "$why This policy has the ALSO name but some settings differ from the ALSO baseline. That can be intentional; review the differences listed." $doc $docText }
+            Add-Result 'ConditionalAccess' $nm "Present - $($stateTxt["$($r.ByName.state)"])" 'Present' Compliant $link $why $doc $docText
             continue
         }
         if ($r.ByCfg) { Add-Result 'ConditionalAccess' $nm "Equivalent policy exists: '$($r.ByCfg.displayName)' ($($stateTxt["$($r.ByCfg.state)"]))" 'Present' Info $link "A policy with a different name but the same settings already covers this ALSO policy, so it is not imported again. Consider renaming it to the ALSO name or keep only one of them." $doc $docText; continue }
-        $simTxt = if ($r.Sim) { " Note: your policy '$($r.Sim.Name)' already has $($r.Sim.Cmp.Percent)% of the same settings. Check it before importing." } else { '' }
-        if (-not $do) { Add-Result 'ConditionalAccess' $nm 'Missing' 'Present (switched off)' Drift $link ($why + $simTxt) $doc $docText; continue }
+        if (-not $do) { Add-Result 'ConditionalAccess' $nm 'Missing' 'Present (switched off)' Drift $link $why $doc $docText; continue }
         try {
             $p = $r.P
             $b = ConvertTo-CleanBody $p.Json
@@ -1036,9 +1031,7 @@ function Step-ConditionalAccess {
     $known = @($rows | ForEach-Object { $_.ByName.id; $_.ByCfg.id } | Where-Object { $_ })
     foreach ($e in $existing) {
         if ("$($e.id)" -in $known) { continue }
-        $best = Find-SimilarPolicy $exFp["$($e.id)"] @($rows | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Fp = $_.Fp } }) 50
-        if ($best) { Add-Result 'ConditionalAccess' "$($e.displayName)" "Similar to the ALSO policy '$($best.Name)' - $($stateTxt["$($e.state)"])`n$(Format-Comparison $best.Cmp)" 'Reviewed' Manual $link 'This policy is not an ALSO policy, but many of its settings match one. Check whether it does the same job: if so, keep one of them; if not, make sure the two do not conflict.' $doc $docText }
-        else { Add-Result 'ConditionalAccess' "$($e.displayName)" "Not part of the ALSO baseline - $($stateTxt["$($e.state)"])" 'Reviewed' Info $link 'This policy was created by you or someone else. It is listed so you have one overview of everything that is active. Check that it does not conflict with the ALSO baseline.' $doc $docText }
+        Add-Result 'ConditionalAccess' "$($e.displayName)" "Existing policy, not part of the ALSO baseline - $($stateTxt["$($e.state)"])" 'Reviewed' Info $link 'This policy already exists in your tenant. It was created by you or someone else and is not changed by this script. Review it and check that it does not conflict with the ALSO baseline.' $doc $docText
     }
 
     Set-Group 'Duplicate policies'
@@ -1190,16 +1183,12 @@ function Step-IntunePolicies {
             $nm = if ($x.Json.displayName) { $x.Json.displayName } else { $x.Json.name }
             if (-not $cache.ContainsKey($target)) { $cache[$target] = @(Get-AllPages $target) }
             $byName = $cache[$target] | Where-Object { (& $norm $(if ($_.displayName) { $_.displayName } else { $_.name })) -eq (& $norm $nm) } | Select-Object -First 1
-            $byCfg = $null; $cmp = $null; $sim = $null
-            if ($null -eq $x.Json.settings) {
+            $byCfg = $null
+            if (-not $byName -and $null -eq $x.Json.settings) {
                 $fp = Get-IntuneFingerprint $x.Json
-                if ($byName) { $cmp = Compare-Fingerprints (Get-IntuneFingerprint $byName) $fp }
-                else {
-                    $byCfg = $cache[$target] | Where-Object { (Get-IntuneFingerprint $_) -eq $fp } | Select-Object -First 1
-                    if (-not $byCfg) { $sim = Find-SimilarPolicy $fp @($cache[$target] | ForEach-Object { [pscustomobject]@{ Name = $(if ($_.displayName) { $_.displayName } else { $_.name }); Fp = (Get-IntuneFingerprint $_) } }) 60 }
-                }
+                $byCfg = $cache[$target] | Where-Object { (Get-IntuneFingerprint $_) -eq $fp } | Select-Object -First 1
             }
-            $items += [pscustomobject]@{ Name = $nm; Plat = $plat; Target = $target; Json = $x.Json; ByName = $byName; ByCfg = $byCfg; Cmp = $cmp; Sim = $sim }
+            $items += [pscustomobject]@{ Name = $nm; Plat = $plat; Target = $target; Json = $x.Json; ByName = $byName; ByCfg = $byCfg }
         }
         if (-not $items.Count) { continue }
         $miss = @($items | Where-Object { -not $_.ByName -and -not $_.ByCfg })
@@ -1208,14 +1197,9 @@ function Step-IntunePolicies {
         $why = 'Policies are created unassigned, so nothing changes on devices yet. Assign each policy to a pilot group, check the results, then widen the scope.'
         foreach ($i in ($items | Sort-Object Name)) {
             $label = "$($i.Name)  [$($i.Plat)]"
-            if ($i.ByName) {
-                if ($i.Cmp -and $i.Cmp.Percent -lt 100) { Add-Result 'IntunePolicies' $label "Present`n$(Format-Comparison $i.Cmp)" 'Present' Info $link "$why This policy has the ALSO name but some settings differ from the ALSO baseline. That can be intentional; review the differences listed." $doc $meta[2] }
-                else { Add-Result 'IntunePolicies' $label $(if ($i.Cmp) { 'Present. Same settings as ALSO' } else { 'Present' }) 'Present' Compliant $link $why $doc $meta[2] }
-                continue
-            }
+            if ($i.ByName) { Add-Result 'IntunePolicies' $label 'Present' 'Present' Compliant $link $why $doc $meta[2]; continue }
             if ($i.ByCfg) { $en = if ($i.ByCfg.displayName) { $i.ByCfg.displayName } else { $i.ByCfg.name }; Add-Result 'IntunePolicies' $label "Equivalent policy exists: '$en'" 'Present' Info $link 'A policy with a different name but the same settings already exists, so this one is not imported again.' $doc $meta[2]; continue }
-            $simTxt = if ($i.Sim) { " Note: your policy '$($i.Sim.Name)' already has $($i.Sim.Cmp.Percent)% of the same settings. Check it before importing." } else { '' }
-            if (-not $do) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link ($why + $simTxt) $doc $meta[2]; continue }
+            if (-not $do) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link $why $doc $meta[2]; continue }
             try { Graph POST $i.Target (ConvertTo-CleanBody $i.Json) | Out-Null; Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Fixed $link $why $doc $meta[2] }
             catch { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Error $link "Import failed: $($_.Exception.Message)" $doc $meta[2] }
         }
@@ -1444,15 +1428,9 @@ function Step-Purview {
         $g7 = 'Your existing tenant: DLP policies'
         foreach ($o in @($dlp | Where-Object { $_.Name -notlike 'BP-ALSO*' -and $_.Name -notlike 'E5-PS-ALSO*' })) {
             $j = & $sitJson (& $rulesOf $o.Name)
-            $same = @($config.SitDlpPolicies | Where-Object { $j -and $sitNames[$_.Name].Count -and -not @($sitNames[$_.Name] | Where-Object { $j -notmatch [regex]::Escape($_) }).Count } | ForEach-Object { $_.Name })
-            $part = @($config.SitDlpPolicies | Where-Object { $_.Name -notin $same -and $j -and $sitNames[$_.Name].Count } | ForEach-Object {
-                    $hit = @($sitNames[$_.Name] | Where-Object { $j -match [regex]::Escape($_) })
-                    if ($hit.Count -and ($hit.Count / $sitNames[$_.Name].Count) -ge 0.5) { "$($_.Name) - looks for $($hit.Count) of $($sitNames[$_.Name].Count) of the same data types ($($hit -join ', '))" } })
             $where = @(if (@($o.ExchangeLocation).Count) { 'Exchange' }; if (@($o.SharePointLocation).Count) { 'SharePoint' }; if (@($o.OneDriveLocation).Count) { 'OneDrive' }; if (@($o.EndpointDlpLocation).Count) { 'Endpoint devices' }; if (@($o.TeamsLocation).Count) { 'Teams' }) -join ', '
             $facts = "Mode: $(& $modeTxt $o)." + $(if ($where) { " Applies to: $where." } else { '' })
-            if ($same) { & $addRow $g7 "DLP policy: $($o.Name)" "Possible duplicate of the ALSO policy:`n$(($same | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "$facts It looks for the same sensitive data as the ALSO baseline policy, so users may be warned or blocked twice if both are on. Compare the two and keep the one that fits your organization." $dlpL $false }
-            elseif ($part.Count) { & $addRow $g7 "DLP policy: $($o.Name)" "Partly the same as the ALSO policy:`n$(($part | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "$facts Part of what it looks for is also covered by an ALSO baseline policy, so users may be warned twice for the overlapping data. Compare and keep what fits." $dlpL $false }
-            else { & $addRow $g7 "DLP policy: $($o.Name)" "Exists, no overlap with ALSO" 'Reviewed by you' Info "$facts Your own policy. It is never changed by this script." $dlpL $false }
+            & $addRow $g7 "DLP policy: $($o.Name)" 'Existing policy' 'Reviewed by you' Info "$facts This policy already exists in your tenant and is not changed by this script. Review it and check that it does not overlap with the ALSO baseline DLP policies, otherwise users may be warned or blocked twice." $dlpL $false
         }
 
         $g8 = 'ALSO baseline (suggested): Retention (optional)'; $g8x = 'Your existing tenant: Retention policies'
