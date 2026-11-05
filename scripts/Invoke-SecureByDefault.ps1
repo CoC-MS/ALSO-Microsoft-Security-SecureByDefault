@@ -57,7 +57,7 @@ $BreakGlassPdf = $GuideBase + 'downloads/break-glass-account-best-practices.pdf'
 
 function Add-Result {
     param($Step, $Setting, $Current, $Expected, [ValidateSet('Compliant', 'Drift', 'Fixed', 'Manual', 'Info', 'Error', 'Skipped')]$Status, $Link, $Detail, $Doc, $DocText)
-    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Doc = $Doc; DocText = $(if ($DocText) { $DocText } else { 'Read the ALSO guide' }) })
+    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Group = $script:Group; Doc = $Doc; DocText = $(if ($DocText) { $DocText } else { 'Read the ALSO guide' }) })
     $color = @{ Compliant = 'Green'; Fixed = 'Green'; Drift = 'Yellow'; Manual = 'Cyan'; Info = 'Gray'; Error = 'Red'; Skipped = 'DarkGray' }[$Status]
     $msg = switch ($Status) {
         'Compliant' { "${Setting}: $Current" }
@@ -73,7 +73,10 @@ function Add-Result {
     if ($Doc -and $Status -in 'Manual', 'Drift', 'Skipped') { Write-Host "              Guide: $Doc" -ForegroundColor DarkCyan }
 }
 
+function Set-Group([string]$Name) { $script:Group = $Name }
+
 function Write-Step([string]$Title, [string]$Why) {
+    $script:Group = $null
     Write-Host "`n== $Title ==" -ForegroundColor Magenta
     Write-Host "   $Why" -ForegroundColor DarkGray
 }
@@ -96,13 +99,18 @@ function Compare-Setting {
 }
 
 function Invoke-Safe([string]$Step, [scriptblock]$Body) {
-    try { & $Body } catch { Add-Result $Step 'step execution' $_.Exception.Message 'success' Error $null }
+    try { & $Body } catch { Add-Result $Step 'Step could not be completed' "$($_.Exception.Message) (script line $($_.InvocationInfo.ScriptLineNumber))" 'Completed' Error $null 'The step stopped unexpectedly. The checks before this point are still listed. Send this message to ALSO if it persists.' }
 }
 
 function Graph($Method, $Uri, $Body) {
     $p = @{ Method = $Method; Uri = $Uri }
-    if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 10); $p.ContentType = 'application/json' }
-    Invoke-MgGraphRequest @p
+    if ($Body) { $p.Body = ($Body | ConvertTo-Json -Depth 30); $p.ContentType = 'application/json' }
+    try { Invoke-MgGraphRequest @p }
+    catch {
+        $m = $_.Exception.Message
+        if ($_.ErrorDetails.Message) { try { $m = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message } catch { $m = $_.ErrorDetails.Message } }
+        throw "$m [$Method $(($Uri -split '\?')[0] -replace 'https://graph.microsoft.com/','')]"
+    }
 }
 
 function New-StrongPassword {
@@ -370,9 +378,12 @@ function Step-Consent {
 }
 
 function Step-BreakGlass {
-    Write-Step 'Emergency access (break-glass) accounts' '2 cloud-only Global Admins on onmicrosoft.com, group, restricted-management AU.'
+    Write-Step 'Emergency access (break-glass) accounts' 'Two cloud-only Global Admins on onmicrosoft.com, in a security group, inside a restricted-management administrative unit.'
+    $start = $script:Results.Count
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/AllUsers'
+    $pdf = 'Break-glass best practices (PDF)'
     $refUpns = @($script:Reference.breakGlass.accountNames | ForEach-Object { "$_@$initialDomain".ToLower() })
+    $gaId = '62e90394-69f5-4237-9190-012177145e10'
     $found = @()
     try {
         $words = 'emergency', 'break', 'breakglass', 'glass', 'bg'
@@ -381,121 +392,162 @@ function Step-BreakGlass {
         $found = @($res.value | Where-Object { $_.userPrincipalName.ToLower() -notin $refUpns })
     }
     catch { Write-Warning "Could not search for existing emergency accounts: $($_.Exception.Message)" }
+
+    Set-Group '1. Do you already have emergency accounts?'
     if ($found) {
-        Write-Host '   Existing accounts were found. Creating new ones below is optional. Note: names like breakglass or emergency are not recommended - use generic names.' -ForegroundColor Yellow
+        Write-Host '   Existing accounts were found. Creating new ones below is optional.' -ForegroundColor Yellow
         $list = ($found | ForEach-Object { $_.userPrincipalName }) -join ', '
-        Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' "Found: $list" 'Verify these are proper break-glass accounts' Info $link 'These accounts look like emergency or break-glass accounts. Naming: it is not recommended to give break-glass accounts names like breakglass or emergency, because that makes them an obvious target for attackers. Use generic, unremarkable names (this script uses svr_ea_01 and svr_ea_02). Also check that each is cloud-only, has a permanent Global Administrator role, is excluded from Conditional Access, has its own FIDO2 key and is monitored. If they are, you may not need to create new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        Add-Result 'BreakGlass' 'Accounts that look like emergency accounts' $list 'Each one meets the four checks below' Info $link 'These accounts have emergency, break, breakglass, glass or bg in their name, so they are treated as your existing break-glass accounts. Each one is checked below for the four requirements: cloud-only, permanent Global Administrator, member of a security group, and that group inside a restricted management administrative unit. If they all pass, you do not need the new accounts from section 3.' $BreakGlassPdf $pdf
+        Add-Result 'BreakGlass' 'Naming of the existing accounts' 'Names reveal their purpose' 'Generic, unremarkable names' Info $link 'It is not recommended to name break-glass accounts breakglass, emergency or similar: attackers search for those names first. Rename them to something generic (the new accounts from this script are called svr_ea_01 and svr_ea_02).' $BreakGlassPdf $pdf
     }
     else {
-        Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' 'None found by name' 'Double-check manually before creating new accounts' Manual $link 'No account with emergency, break, breakglass or bg in its name was found. This only means none exist under those names. Please double-check in Entra ID (Users and Roles) that your tenant does not already have emergency access accounts under another name before creating new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
-        if ($Mode -eq 'Enforce') {
-            Write-Host '   No existing accounts named emergency / break / breakglass / bg were found. This only means none exist under those names - please double-check in Entra ID first.' -ForegroundColor Yellow
-        }
+        Add-Result 'BreakGlass' 'Accounts that look like emergency accounts' 'None found by name' 'Double-check, then create two if you have none' Manual $link 'No account with emergency, break, breakglass, glass or bg in its name was found. This only means none exist under those names. Look in Entra ID (Users, and Roles and administrators > Global Administrator) for accounts that serve this purpose under another name. If there are none, create the two accounts in section 3 (Enforce mode offers this).' $BreakGlassPdf $pdf
+        if ($Mode -eq 'Enforce') { Write-Host '   No accounts named emergency / break / breakglass / bg were found - please double-check in Entra ID first.' -ForegroundColor Yellow }
     }
-    $gaId = '62e90394-69f5-4237-9190-012177145e10'
+
     foreach ($e in $found) {
         $who = $e.userPrincipalName
-        try {
-            Add-Result 'BreakGlass' "Existing account $who - cloud-only" $(if ($e.onPremisesSyncEnabled) { 'Synced from on-premises' } else { 'Cloud-only' }) 'Cloud-only' $(if ($e.onPremisesSyncEnabled) { 'Drift' } else { 'Compliant' }) $link 'Break-glass accounts must be cloud-only so they still work when on-premises AD or sync is down.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        Set-Group "2. Existing account: $who"
+        Invoke-Part 'BreakGlass' "Checks for $who" {
+            Add-Result 'BreakGlass' "$who is cloud-only" $(if ($e.onPremisesSyncEnabled) { 'No, synced from on-premises' } else { 'Yes' }) 'Yes' $(if ($e.onPremisesSyncEnabled) { 'Drift' } else { 'Compliant' }) $link 'A break-glass account must be cloud-only so it still works when on-premises Active Directory or Entra Connect is down.' $BreakGlassPdf $pdf
             $ga = @((Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($e.id)' and roleDefinitionId eq '$gaId'").value)
-            Add-Result 'BreakGlass' "Existing account $who - permanent Global Administrator" $(if ($ga) { 'Assigned permanently' } else { 'No permanent assignment found' }) 'Permanent (active) Global Administrator' $(if ($ga) { 'Compliant' } else { 'Drift' }) $link 'Break-glass accounts need a permanent, active Global Administrator assignment (not eligible/PIM-only, and not only through a group), so they work when other systems fail.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+            Add-Result 'BreakGlass' "$who has a permanent Global Administrator role" $(if ($ga) { 'Yes' } else { 'No' }) 'Yes' $(if ($ga) { 'Compliant' } else { 'Drift' }) $link 'The role must be permanently active, not eligible through PIM and not only inherited through a group, so the account works when other systems fail.' $BreakGlassPdf $pdf
             $grps = @((Graph GET "https://graph.microsoft.com/v1.0/users/$($e.id)/memberOf/microsoft.graph.group?`$select=id,displayName,securityEnabled").value | Where-Object { $_.securityEnabled })
-            Add-Result 'BreakGlass' "Existing account $who - member of a security group" $(if ($grps) { ($grps.displayName -join ', ') } else { 'Not in any security group' }) 'Member of a dedicated security group' $(if ($grps) { 'Compliant' } else { 'Drift' }) $link 'Put the break-glass accounts in a dedicated security group so you can exclude them from Conditional Access and protect them as one set.' $BreakGlassPdf 'Break-glass best practices (PDF)'
-            $inAu = $false
+            Add-Result 'BreakGlass' "$who is a member of a security group" $(if ($grps) { ($grps.displayName -join ', ') } else { 'No' }) 'Yes' $(if ($grps) { 'Compliant' } else { 'Drift' }) $link 'A dedicated security group lets you exclude all break-glass accounts from Conditional Access and protect them as one set.' $BreakGlassPdf $pdf
+            $auName = ''
             foreach ($gr in $grps) {
-                if (@((Graph GET "https://graph.microsoft.com/v1.0/groups/$($gr.id)/memberOf/microsoft.graph.administrativeUnit?`$select=id,isMemberManagementRestricted").value | Where-Object { $_.isMemberManagementRestricted }).Count) { $inAu = $true }
+                $a = @((Graph GET "https://graph.microsoft.com/v1.0/groups/$($gr.id)/memberOf/microsoft.graph.administrativeUnit?`$select=id,displayName,isMemberManagementRestricted").value | Where-Object { $_.isMemberManagementRestricted })
+                if ($a.Count) { $auName = $a[0].displayName }
             }
-            Add-Result 'BreakGlass' "Existing account $who - group in a restricted management administrative unit" $(if ($inAu) { 'Yes' } else { 'No' }) 'Yes' $(if ($inAu) { 'Compliant' } else { 'Drift' }) $link 'The security group should be inside a restricted management administrative unit (RMAU) so only the trusted admins you assign to it can change the group or its accounts.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+            Add-Result 'BreakGlass' "The group of $who is inside a restricted management administrative unit" $(if ($auName) { "Yes: $auName" } else { 'No' }) 'Yes' $(if ($auName) { 'Compliant' } else { 'Drift' }) $link 'A restricted management administrative unit (RMAU) means only the trusted admins assigned to it can change the group or its accounts.' $BreakGlassPdf $pdf
         }
-        catch { Write-Warning "Could not fully check existing account ${who}: $($_.Exception.Message)" }
     }
-    try {
+    Set-Group '2. Existing emergency security groups'
+    Invoke-Part 'BreakGlass' 'Security group search' {
         $gw = 'emergency', 'break', 'breakglass', 'glass', 'bg'
         $gq = (($gw | ForEach-Object { "`"displayName:$_`"" }) -join ' OR ')
         $fg = @((Invoke-MgGraphRequest -Method GET -Uri ('https://graph.microsoft.com/v1.0/groups?$count=true&$top=50&$select=displayName,securityEnabled&$search=' + [uri]::EscapeDataString($gq)) -Headers @{ ConsistencyLevel = 'eventual' }).value | Where-Object { $_.securityEnabled -and $_.displayName -ne $BreakGlassGroupName })
-        if ($fg) { Add-Result 'BreakGlass' 'Existing emergency security groups (name contains emergency, break, breakglass or bg)' "Found: $(($fg.displayName) -join ', ')" 'Verify this is the break-glass group and is in an RMAU' Info 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/GroupsManagementMenuBlade/~/AllGroups' 'These security groups look like break-glass groups. Check that they contain only the break-glass accounts, are excluded from Conditional Access and sit inside a restricted management administrative unit. Avoid obvious names like breakglass or emergency - use generic names.' $BreakGlassPdf 'Break-glass best practices (PDF)' }
+        if ($fg) { Add-Result 'BreakGlass' 'Security groups that look like break-glass groups' ($fg.displayName -join ', ') 'Contains only the break-glass accounts' Info 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/GroupsManagementMenuBlade/~/AllGroups' 'Check that the group contains only the break-glass accounts, is excluded from Conditional Access and sits inside a restricted management administrative unit. Avoid obvious names like breakglass or emergency.' $BreakGlassPdf $pdf }
     }
-    catch { Write-Warning "Could not search for existing emergency groups: $($_.Exception.Message)" }
+
+    Set-Group '3. The two ALSO break-glass accounts'
     $users = @(foreach ($n in $script:Reference.breakGlass.accountNames) {
         $upn = "$n@$initialDomain"
-        $u = (Graph GET "https://graph.microsoft.com/v1.0/users?`$filter=userPrincipalName eq '$upn'").value | Select-Object -First 1
-        if ($u) { Add-Result 'BreakGlass' "Account $upn" 'exists' 'exists' Compliant $link; $u; continue }
-        if (Confirm-Change "Create break-glass account $upn") {
-            $pw = New-StrongPassword
-            $u = Graph POST 'https://graph.microsoft.com/v1.0/users' @{
-                accountEnabled = $true; displayName = "Emergency Access $n"; mailNickname = $n; userPrincipalName = $upn
-                passwordPolicies = 'DisablePasswordExpiration'; passwordProfile = @{ password = $pw; forceChangePasswordNextSignIn = $false }
+        try {
+            $u = (Graph GET "https://graph.microsoft.com/v1.0/users?`$filter=userPrincipalName eq '$upn'").value | Select-Object -First 1
+            if ($u) { Add-Result 'BreakGlass' "Account $upn exists" 'Yes' 'Yes' Compliant $link; $u; continue }
+            if (Confirm-Change "Create break-glass account $upn") {
+                $pw = New-StrongPassword
+                $u = Graph POST 'https://graph.microsoft.com/v1.0/users' @{
+                    accountEnabled = $true; displayName = "Emergency Access $n"; mailNickname = $n; userPrincipalName = $upn
+                    passwordPolicies = 'DisablePasswordExpiration'; passwordProfile = @{ password = $pw; forceChangePasswordNextSignIn = $false }
+                }
+                Write-Host "   >>> ONE-TIME PASSWORD for ${upn}: $pw  (store offline now; not shown again)" -ForegroundColor Black -BackgroundColor Yellow
+                Remove-Variable pw
+                Add-Result 'BreakGlass' "Account $upn exists" 'No' 'Created' Fixed $link; $u
             }
-            # Shown once on the console only; never written to reports or logs.
-            Write-Host "   >>> ONE-TIME PASSWORD for ${upn}: $pw  (store offline now; not shown again)" -ForegroundColor Black -BackgroundColor Yellow
-            Remove-Variable pw
-            Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Created' Fixed $link; $u
+            elseif ($found) { Add-Result 'BreakGlass' "Account $upn exists" 'No' 'Optional: create only if your existing accounts fail a check above' Info $link 'You already have accounts that look like break-glass accounts, so creating these two is optional. Create them if an existing account fails any check above.' $BreakGlassPdf $pdf }
+            else { Add-Result 'BreakGlass' "Account $upn exists" 'No' 'Yes' Drift $link 'Break-glass accounts guarantee you can still get in if Conditional Access, MFA or federation fails. Enforce mode creates them with a long random password that is shown once on the console.' $BreakGlassPdf $pdf }
         }
-        elseif ($found) { Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Optional - can be created if needed' Info $link 'Existing emergency accounts were found, so creating these two new accounts is optional. Create them only if the existing accounts do not meet the break-glass requirements.' $BreakGlassPdf 'Break-glass best practices (PDF)' }
-        else { Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Should exist' Drift $link }
+        catch { Add-Result 'BreakGlass' "Account $upn" $_.Exception.Message 'Created or found' Error $link }
     })
 
-    $g = (Graph GET "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$BreakGlassGroupName'").value | Select-Object -First 1
-    if (-not $g -and (Confirm-Change "Create security group $BreakGlassGroupName")) {
-        $g = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $BreakGlassGroupName; mailNickname = ($BreakGlassGroupName -replace '\W', ''); mailEnabled = $false; securityEnabled = $true; description = 'Emergency access accounts' }
-        Add-Result 'BreakGlass' 'Security group' 'Does not exist' 'Created' Fixed $null
+    Set-Group '4. Security group'
+    $g = $null
+    Invoke-Part 'BreakGlass' 'Security group' {
+        $script:bgG = (Graph GET "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$BreakGlassGroupName'").value | Select-Object -First 1
+        if (-not $script:bgG -and (Confirm-Change "Create security group $BreakGlassGroupName")) {
+            $script:bgG = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $BreakGlassGroupName; mailNickname = ($BreakGlassGroupName -replace '\W', ''); mailEnabled = $false; securityEnabled = $true; description = 'Emergency access accounts' }
+            Add-Result 'BreakGlass' "Security group $BreakGlassGroupName exists" 'No' 'Created' Fixed $null
+        }
+        elseif ($script:bgG) { Add-Result 'BreakGlass' "Security group $BreakGlassGroupName exists" 'Yes' 'Yes' Compliant $null }
+        elseif ($found) { Add-Result 'BreakGlass' "Security group $BreakGlassGroupName exists" 'No' 'Optional: only needed for the new accounts' Info $null 'You already have emergency accounts, so a second group is optional.' $BreakGlassPdf $pdf }
+        else { Add-Result 'BreakGlass' "Security group $BreakGlassGroupName exists" 'No' 'Yes' Drift $null 'One group holds all break-glass accounts so they can be excluded from Conditional Access and protected together.' $BreakGlassPdf $pdf }
     }
-    elseif ($g) { Add-Result 'BreakGlass' 'Security group' 'exists' 'exists' Compliant $null }
-    else { Add-Result 'BreakGlass' 'Security group' 'Does not exist' 'Should exist' Drift $null }
-
+    $g = $script:bgG
     if ($g) {
-        $members = @((Graph GET "https://graph.microsoft.com/v1.0/groups/$($g.id)/members?`$select=id").value.id)
-        foreach ($u in $users) {
-            if ($u.id -in $members) { continue }
-            if (Confirm-Change "Add $($u.userPrincipalName) to $BreakGlassGroupName") {
-                Graph POST "https://graph.microsoft.com/v1.0/groups/$($g.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$($u.id)" } | Out-Null
-                Add-Result 'BreakGlass' "Membership $($u.userPrincipalName)" 'Not a member' 'Member of the group' Fixed $null
+        Invoke-Part 'BreakGlass' 'Group membership' {
+            $members = @((Graph GET "https://graph.microsoft.com/v1.0/groups/$($g.id)/members?`$select=id").value.id)
+            foreach ($u in $users) {
+                $nm = "$($u.userPrincipalName) is a member of $BreakGlassGroupName"
+                if ($u.id -in $members) { Add-Result 'BreakGlass' $nm 'Yes' 'Yes' Compliant $null; continue }
+                if (Confirm-Change "Add $($u.userPrincipalName) to $BreakGlassGroupName") {
+                    Graph POST "https://graph.microsoft.com/v1.0/groups/$($g.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$($u.id)" } | Out-Null
+                    Add-Result 'BreakGlass' $nm 'No' 'Added' Fixed $null
+                }
+                else { Add-Result 'BreakGlass' $nm 'No' 'Yes' Drift $null }
             }
-            else { Add-Result 'BreakGlass' "Membership $($u.userPrincipalName)" 'Not a member' 'Member of the group' Drift $null }
         }
     }
 
-    $gaTemplate = '62e90394-69f5-4237-9190-012177145e10'
+    Set-Group '5. Global Administrator role'
     foreach ($u in $users) {
-        $has = (Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($u.id)' and roleDefinitionId eq '$gaTemplate'").value
-        if ($has) { Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'assigned' 'assigned' Compliant $null; continue }
-        if (Confirm-Change "Assign Global Administrator (permanent) to $($u.userPrincipalName)") {
-            Graph POST 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments' @{ principalId = $u.id; roleDefinitionId = $gaTemplate; directoryScopeId = '/' } | Out-Null
-            Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'Role not assigned' 'Global Administrator assigned' Fixed $null
+        Invoke-Part 'BreakGlass' "Role for $($u.userPrincipalName)" {
+            $nm = "$($u.userPrincipalName) has a permanent Global Administrator role"
+            $has = (Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$($u.id)' and roleDefinitionId eq '$gaId'").value
+            if ($has) { Add-Result 'BreakGlass' $nm 'Yes' 'Yes' Compliant $null; return }
+            if (Confirm-Change "Assign Global Administrator (permanent) to $($u.userPrincipalName)") {
+                Graph POST 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments' @{ principalId = $u.id; roleDefinitionId = $gaId; directoryScopeId = '/' } | Out-Null
+                Add-Result 'BreakGlass' $nm 'No' 'Assigned' Fixed $null
+            }
+            else { Add-Result 'BreakGlass' $nm 'No' 'Yes' Drift $null }
         }
-        else { Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'Role not assigned' 'Global Administrator assigned' Drift $null }
     }
 
+    Set-Group '6. Restricted management administrative unit (RMAU)'
     $auLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits'
-    $au = (Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$BreakGlassAuName'").value | Select-Object -First 1
-    if (-not $au -and (Confirm-Change "Create restricted-management AU $BreakGlassAuName")) {
-        $au = Graph POST 'https://graph.microsoft.com/v1.0/directory/administrativeUnits' @{ displayName = $BreakGlassAuName; description = 'Protects emergency access objects'; isMemberManagementRestricted = $true }
-        Add-Result 'BreakGlass' 'Restricted management AU' 'Does not exist' 'Created' Fixed $auLink
-    }
-    elseif ($au) { Compare-Setting 'BreakGlass' 'AU restricted management' $au.isMemberManagementRestricted 'True' $null $auLink }
-    else { Add-Result 'BreakGlass' 'Restricted management AU' 'Does not exist' 'Should exist' Drift $auLink }
-    if ($au -and $g) {
-        $auMembers = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members?`$select=id").value.id)
-        if ($g.id -in $auMembers) { Add-Result 'BreakGlass' 'Group in AU' 'yes' 'yes' Compliant $null }
-        elseif (Confirm-Change "Add group to AU $BreakGlassAuName") {
-            Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/groups/$($g.id)" } | Out-Null
-            Add-Result 'BreakGlass' 'Group in AU' 'Not in the AU' 'In the AU' Fixed $null
+    $script:bgAu = $null
+    Invoke-Part 'BreakGlass' 'Administrative unit' {
+        $script:bgAu = (Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$BreakGlassAuName'").value | Select-Object -First 1
+        if (-not $script:bgAu -and (Confirm-Change "Create restricted-management AU $BreakGlassAuName")) {
+            $script:bgAu = Graph POST 'https://graph.microsoft.com/v1.0/directory/administrativeUnits' @{ displayName = $BreakGlassAuName; description = 'Protects emergency access objects'; isMemberManagementRestricted = $true }
+            Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'No' 'Created (restricted)' Fixed $auLink
         }
-        else { Add-Result 'BreakGlass' 'Group in AU' 'Not in the AU' 'In the AU' Drift $null }
+        elseif ($script:bgAu) {
+            Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'Yes' 'Yes' Compliant $auLink
+            Compare-Setting 'BreakGlass' "$BreakGlassAuName has restricted management turned on" (YN $script:bgAu.isMemberManagementRestricted) 'Yes' $null $auLink 'Restricted management is what stops regular admins from changing the group and the accounts. It can only be set when the unit is created, so if it is off, create a new restricted unit.'
+        }
+        elseif ($found) { Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'No' 'Optional: only needed for the new accounts' Info $auLink 'You already have emergency accounts. Make sure their group is inside a restricted management administrative unit (see section 2).' $BreakGlassPdf $pdf }
+        else { Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'No' 'Yes' Drift $auLink 'A restricted management administrative unit makes the break-glass group and accounts editable only by the trusted admins you assign to it.' $BreakGlassPdf $pdf }
     }
+    $au = $script:bgAu
+    if ($au -and $g) {
+        Invoke-Part 'BreakGlass' 'Group in administrative unit' {
+            $nm = "Group $BreakGlassGroupName is inside administrative unit $BreakGlassAuName"
+            $auMembers = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members?`$select=id").value.id)
+            if ($g.id -in $auMembers) { Add-Result 'BreakGlass' $nm 'Yes' 'Yes' Compliant $null }
+            elseif (Confirm-Change "Add group to AU $BreakGlassAuName") {
+                Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/groups/$($g.id)" } | Out-Null
+                Add-Result 'BreakGlass' $nm 'No' 'Added' Fixed $null
+            }
+            else { Add-Result 'BreakGlass' $nm 'No' 'Yes' Drift $null }
+        }
+    }
+
+    Set-Group '7. To do by a person'
     $bgDoc = 'https://learn.microsoft.com/entra/identity/role-based-access-control/security-emergency-access'
-    $adminLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits'
     $caLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
-    Add-Result 'BreakGlass' "Add 1-2 trusted admins as administrators of the '$BreakGlassAuName' administrative unit" 'Cannot be checked automatically' "Only these trusted admins can manage the group '$BreakGlassGroupName' and the two break-glass accounts" Manual $adminLink 'The restricted management administrative unit protects the group and both accounts from being changed by regular admins. Only the trusted admins you add as administrators of the unit (Entra ID > Roles and administrators > Administrative units) can reset passwords, change membership or delete them. Add 1-2 trusted admins only.' $BreakGlassPdf 'Break-glass best practices (PDF)'
-    Add-Result 'BreakGlass' 'Set up monitoring and an alert on every sign-in of the break-glass accounts' 'Cannot be checked automatically' 'Alert goes to the security team on any sign-in' Manual $bgDoc 'Any sign-in with a break-glass account means something went wrong or an attack is under way. Send sign-in logs to Log Analytics / Sentinel and create an alert rule (or a Defender XDR custom detection) that notifies the security team immediately on every sign-in of either account. Test the alert regularly.' $BreakGlassPdf 'Break-glass best practices (PDF)'
-    if (-not ($Steps -contains 'ConditionalAccess')) { Add-Result 'BreakGlass' 'Exclude both break-glass accounts (or the group) from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every Conditional Access policy' Manual $caLink "If a Conditional Access policy breaks sign-in (or MFA is unavailable) the break-glass accounts must still be able to get in. Exclude the group '$BreakGlassGroupName' from every Conditional Access policy, including new ones. Their own protection comes from long random passwords, security keys and monitoring." $BreakGlassPdf 'Break-glass best practices (PDF)' }
-    Add-Result 'BreakGlass' 'Register at least one FIDO2 security key on EACH break-glass account' 'Cannot be checked automatically' 'Each account has its own registered security key' Manual 'https://mysignins.microsoft.com/security-info' 'The accounts are excluded from Conditional Access, so they need their own phishing-resistant sign-in. Sign in once to each account and register at least one FIDO2 security key per account at My Security Info. Store the keys in separate secure physical locations (for example two safes) and document who may access them.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+    Add-Result 'BreakGlass' "Add 1-2 trusted admins as administrators of the '$BreakGlassAuName' administrative unit" 'Cannot be checked automatically' 'Only these admins can manage the group and accounts' Manual $auLink "Only the trusted admins you add as administrators of the unit (Entra ID > Roles and administrators > Administrative units) can reset passwords, change membership or delete the break-glass objects. Add 1-2 trusted admins only." $BreakGlassPdf $pdf
+    Add-Result 'BreakGlass' 'Set up monitoring and an alert on every sign-in of the break-glass accounts' 'Cannot be checked automatically' 'Alert goes to the security team on any sign-in' Manual $bgDoc 'Any sign-in with a break-glass account means something went wrong or an attack is under way. Send sign-in logs to Log Analytics or Sentinel and create an alert rule (or a Defender XDR custom detection) that notifies the security team immediately.' $BreakGlassPdf $pdf
+    if (-not ($Steps -contains 'ConditionalAccess')) { Add-Result 'BreakGlass' 'Exclude the break-glass group from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every policy' Manual $caLink "If a Conditional Access policy breaks sign-in the break-glass accounts must still be able to get in. Exclude the group '$BreakGlassGroupName' from every policy, including new ones." $BreakGlassPdf $pdf }
+    Add-Result 'BreakGlass' 'Register at least one FIDO2 security key on EACH break-glass account' 'Cannot be checked automatically' 'Each account has its own key' Manual 'https://mysignins.microsoft.com/security-info' 'The accounts are excluded from Conditional Access, so they need their own phishing-resistant sign-in. Register a FIDO2 key per account at My Security Info and store the keys in separate secure places.' $BreakGlassPdf $pdf
+
+    $mine = @($script:Results | Select-Object -Skip $start)
+    $ok = @($mine | Where-Object { $_.Status -in 'Compliant', 'Fixed' }).Count
+    $bad = @($mine | Where-Object { $_.Status -eq 'Drift' }).Count
+    $verdict = if ($found -and $bad -eq 0) { 'Your existing accounts meet the checks. Creating new accounts is optional.' } elseif ($found) { "Your existing accounts fail $bad check(s). Fix them, or create the two new accounts." } elseif ($bad -eq 0) { 'The two ALSO break-glass accounts are set up.' } else { "$bad item(s) still need to be created or fixed." }
+    Set-Group 'Summary'
+    Add-Result 'BreakGlass' 'Break-glass readiness' "$ok check(s) pass, $bad need action" 'All checks pass' $(if ($bad) { 'Info' } else { 'Compliant' }) $link "$verdict How to read this section: 1 shows whether you already have emergency accounts, 2 checks them, 3 to 6 cover the two new ALSO accounts (optional if yours pass), 7 lists what a person must do." $BreakGlassPdf $pdf
+    $sum = $script:Results[$script:Results.Count - 1]
+    $script:Results.RemoveAt($script:Results.Count - 1)
+    $sum.Group = '0. Summary'
+    $script:Results.Insert($start, $sum)
     if ($Mode -eq 'Enforce') {
         Write-Host ''
         Write-Host '   NEXT STEPS for the break-glass accounts (do these now):' -ForegroundColor Yellow
-        Write-Host "   1. Add 1-2 trusted admins to the administrative unit '$BreakGlassAuName' in Entra ID, so only they can manage the group '$BreakGlassGroupName' and the two accounts." -ForegroundColor Yellow
-        Write-Host '   2. Set up monitoring and a sign-in alert on both accounts.' -ForegroundColor Yellow
-        Write-Host '   3. Exclude both accounts from ALL Conditional Access policies.' -ForegroundColor Yellow
+        Write-Host "   1. Add 1-2 trusted admins to the administrative unit '$BreakGlassAuName' in Entra ID." -ForegroundColor Yellow
+        Write-Host '   2. Set up monitoring and a sign-in alert on the accounts.' -ForegroundColor Yellow
+        Write-Host '   3. Exclude the group from ALL Conditional Access policies.' -ForegroundColor Yellow
         Write-Host '   4. Register a security key (FIDO2) on each account.' -ForegroundColor Yellow
         Write-Host "   More info (PDF): $BreakGlassPdf" -ForegroundColor DarkCyan
     }
@@ -725,13 +777,59 @@ function ConvertTo-CleanBody {
 }
 #endregion
 
+function Invoke-Part([string]$Step, [string]$Name, [scriptblock]$Body) {
+    try { & $Body }
+    catch { Add-Result $Step $Name "Could not be completed: $($_.Exception.Message)" 'Completed' Error $null 'This part failed, the other checks in this step still ran. The message above comes from Microsoft Graph and normally says which permission or license is missing.' }
+}
+
+function ConvertTo-Canonical($Node) {
+    if ($null -eq $Node) { return $null }
+    if ($Node -is [string] -or $Node -is [ValueType]) { return $Node }
+    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [System.Collections.IDictionary]) {
+        $items = @(foreach ($i in $Node) { $c = ConvertTo-Canonical $i; if ($null -ne $c) { $c } })
+        if (-not $items.Count) { return $null }
+        return , @($items | Sort-Object { if ($_ -is [string] -or $_ -is [ValueType]) { "$_" } else { $_ | ConvertTo-Json -Compress -Depth 20 } })
+    }
+    $keys = if ($Node -is [System.Collections.IDictionary]) { @($Node.Keys) } else { @($Node.PSObject.Properties.Name) }
+    $h = [ordered]@{}
+    foreach ($k in ($keys | Sort-Object)) {
+        if ($k -eq '@odata.type') { continue }
+        $v = if ($Node -is [System.Collections.IDictionary]) { $Node[$k] } else { $Node.$k }
+        $c = ConvertTo-Canonical $v
+        if ($null -ne $c) { $h[$k] = $c }
+    }
+    if (-not $h.Count) { return $null }
+    $h
+}
+
+# Same settings regardless of name, state or the groups that are targeted.
+function Get-CaFingerprint($Pol, [bool]$Strict) {
+    $b = ConvertTo-CleanBody $Pol
+    foreach ($k in 'displayName', 'state', 'description', 'templateId', 'partialEnablementStrategy') { if ($b.Contains($k)) { $b.Remove($k) } }
+    if ($b.Contains('conditions') -and $b['conditions'] -is [System.Collections.IDictionary] -and $b['conditions'].Contains('users')) {
+        $u = $b['conditions']['users']
+        foreach ($k in 'excludeGroups', 'excludeUsers') { if ($u.Contains($k)) { $u.Remove($k) } }
+        if (-not $Strict -and $u.Contains('includeGroups')) { $u['includeGroups'] = @(@($u['includeGroups']).Count) }
+    }
+    $as = $Pol.grantControls.authenticationStrength
+    if ($as -and $b.Contains('grantControls') -and $b['grantControls'] -is [System.Collections.IDictionary]) { $b['grantControls']['authenticationStrength'] = [ordered]@{ id = "$($as.id)" } }
+    ConvertTo-Canonical $b | ConvertTo-Json -Compress -Depth 20
+}
+
+function Get-IntuneFingerprint($Pol) {
+    $b = ConvertTo-CleanBody $Pol
+    foreach ($k in 'displayName', 'description', 'name', 'roleScopeTagIds', 'scheduledActionsForRule', 'templateReference') { if ($b.Contains($k)) { $b.Remove($k) } }
+    ConvertTo-Canonical $b | ConvertTo-Json -Compress -Depth 20
+}
+
 function Step-ConditionalAccess {
-    Write-Step 'Conditional Access baseline' 'Imports ALSO''s Conditional Access policies (switched OFF), keeps the break-glass group excluded from every policy.'
+    Write-Step 'Conditional Access baseline' 'Imports ALSO''s Conditional Access policies (switched OFF), recognises policies you already have, and keeps the break-glass group excluded from every policy.'
     $doc = $GuideBase + '#identity-policies'
     $docText = 'ALSO guide: Conditional Access baseline (Identity and access, step 10)'
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
     $lic = Get-LicenseTier
     $caBase = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
+    $stateTxt = @{ enabled = 'On'; disabled = 'Off'; enabledForReportingButNotEnforced = 'Report-only' }
     $dir = Get-GuidePackage 'conditional-access'
     $polFiles = @(Get-PackageJson $dir 'ConditionalAccess')
     $grpFiles = @(Get-PackageJson $dir 'Groups')
@@ -741,97 +839,117 @@ function Step-ConditionalAccess {
     $e5ok = ($lic.Tier -eq 'Full') -or $lic.HasP2
     $wanted = @($polFiles | Where-Object { $e5ok -or $_.File.Name -notmatch '^E5-' })
     $skippedE5 = @($polFiles | Where-Object { -not $e5ok -and $_.File.Name -match '^E5-' })
-    if ($skippedE5.Count) {
-        Add-Result 'ConditionalAccess' "ALSO E5 Conditional Access policies ($($skippedE5.Count))" 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'These policies use Entra ID Protection (risk) or Privileged Identity Management features that are only included with Entra ID P2.' $doc $docText
-    }
     $existing = @(Get-AllPages $caBase)
-    $names = @($existing | ForEach-Object { $_.displayName })
-    $missing = @($wanted | Where-Object { $_.Json.displayName -notin $names })
-    $present = $wanted.Count - $missing.Count
-    $why = 'ALSO''s baseline blocks legacy authentication, requires MFA for users and admins, protects admin portals and guests and requires compliant devices. Policies are created switched OFF so nothing changes until you review them: turn each one on in report-only first, check the sign-in logs, then enable. Security defaults must be turned off before the policies are enabled. The break-glass group is excluded from every imported policy.'
-    Compare-Setting 'ConditionalAccess' 'ALSO Conditional Access baseline policies' "$present of $($wanted.Count) present" "$($wanted.Count) of $($wanted.Count) present (switched off)" {
-        $map = @{}
-        $ref = @()
-        foreach ($p in $missing) { foreach ($k in 'includeGroups', 'excludeGroups') { $ref += @($p.Json.conditions.users.$k) } }
-        $ref = @($ref | Where-Object { $_ } | Sort-Object -Unique)
-        $createdGroups = @()
-        foreach ($g in $grpFiles) {
-            if ($g.Json.id -notin $ref) { continue }
-            $gn = $g.Json.displayName
-            if ($gn -like '*BSAccounts*' -and $bgId) { $map["$($g.Json.id)"] = $bgId; continue }
-            $f = Find-GroupByName $gn
-            if (-not $f) {
-                $nick = ($gn -replace '[^A-Za-z0-9]', '')
-                if ($nick.Length -gt 60) { $nick = $nick.Substring(0, 60) }
-                $f = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $gn; description = 'ALSO Conditional Access baseline group'; mailEnabled = $false; securityEnabled = $true; mailNickname = $nick }
-                Write-Host "   Created group: $gn" -ForegroundColor DarkGray
-            }
-            $map["$($g.Json.id)"] = $f.id
-        }
-        foreach ($c in $ctxFiles) {
-            $cid = $c.Json.id
-            $have = $true
-            try { Graph GET "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences/$cid" | Out-Null } catch { $have = $false }
-            if (-not $have) {
-                Graph POST 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' @{ id = $cid; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null
-                Write-Host "   Created authentication context: $($c.Json.displayName)" -ForegroundColor DarkGray
-            }
-        }
-        $fail = @()
-        foreach ($p in $missing) {
-            try {
-                $b = ConvertTo-CleanBody $p.Json
-                $b['state'] = 'disabled'
-                $u = $b['conditions']['users']
-                foreach ($k in 'includeGroups', 'excludeGroups') {
-                    if ($u.Contains($k)) { $u[$k] = [object[]]@(@($u[$k]) | ForEach-Object { $map["$_"] } | Where-Object { $_ }) }
-                }
-                if ($bgId) {
-                    $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
-                    if ($bgId -notin $ex) { $u['excludeGroups'] = [object[]]($ex + $bgId) }
-                }
-                $as = $p.Json.grantControls.authenticationStrength
-                if ($as -and $b['grantControls']) { $b['grantControls']['authenticationStrength'] = [ordered]@{ id = $as.id } }
-                Graph POST $caBase $b | Out-Null
-                Write-Host "   Imported (off): $($p.Json.displayName)" -ForegroundColor DarkGray
-            }
-            catch { $fail += "$($p.Json.displayName): $($_.Exception.Message)" }
-        }
-        if ($fail.Count) { throw ("Not imported: " + ($fail -join ' | ')) }
-    } $link $why $doc $docText
+    $exFp = @{}
+    foreach ($e in $existing) { $exFp["$($e.id)"] = Get-CaFingerprint $e $false }
+    $why = 'ALSO''s baseline blocks legacy authentication, requires MFA for users and admins, protects admin portals and guests and requires compliant devices. Policies are created switched OFF so nothing changes until you review them. A policy counts as present when one with the same name exists, or when a policy with a different name has the same settings.'
 
-    $existing = @(Get-AllPages $caBase)
-    if ($bgId) {
-        $need = @($existing | Where-Object { @($_.conditions.users.excludeGroups) -notcontains $bgId -and @($_.conditions.users.includeUsers) -notcontains 'None' })
-        $ok = $existing.Count - $need.Count
-        if ($existing.Count) {
-            Compare-Setting 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all Conditional Access policies" "$ok of $($existing.Count) policies exclude it" "$($existing.Count) of $($existing.Count) policies exclude it" {
-                foreach ($pol in $need) {
-                    $u = ConvertTo-CleanBody $pol.conditions.users $false
-                    $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
-                    $u['excludeGroups'] = [object[]]($ex + $bgId)
-                    Graph PATCH "$caBase/$($pol.id)" @{ conditions = @{ users = $u } } | Out-Null
+    $rows = @(foreach ($p in $wanted) {
+            $nm = $p.Json.displayName
+            $byName = $existing | Where-Object { $_.displayName -eq $nm } | Select-Object -First 1
+            $byCfg = $null
+            if (-not $byName) { $fp = Get-CaFingerprint $p.Json $false; $byCfg = $existing | Where-Object { $exFp["$($_.id)"] -eq $fp } | Select-Object -First 1 }
+            [pscustomobject]@{ P = $p; Name = $nm; ByName = $byName; ByCfg = $byCfg }
+        })
+    $missing = @($rows | Where-Object { -not $_.ByName -and -not $_.ByCfg })
+    $do = $false
+    $map = @{}
+    if ($missing.Count) { $do = Confirm-Change "Import $($missing.Count) missing ALSO Conditional Access policies (switched off)" }
+    if ($do) {
+        try {
+            $ref = @()
+            foreach ($m in $missing) { foreach ($k in 'includeGroups', 'excludeGroups') { $ref += @($m.P.Json.conditions.users.$k) } }
+            $ref = @($ref | Where-Object { $_ } | Sort-Object -Unique)
+            foreach ($g in $grpFiles) {
+                if ($g.Json.id -notin $ref) { continue }
+                $gn = $g.Json.displayName
+                if ($gn -like '*BSAccounts*' -and $bgId) { $map["$($g.Json.id)"] = $bgId; continue }
+                $f = Find-GroupByName $gn
+                if (-not $f) {
+                    $nick = ($gn -replace '[^A-Za-z0-9]', ''); if ($nick.Length -gt 60) { $nick = $nick.Substring(0, 60) }
+                    $f = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $gn; description = 'ALSO Conditional Access baseline group'; mailEnabled = $false; securityEnabled = $true; mailNickname = $nick }
+                    Write-Host "   Created group: $gn" -ForegroundColor DarkGray
                 }
-            } $link 'If a Conditional Access policy breaks sign-in, or MFA is unavailable, the break-glass accounts must still get in. The group is added to the excluded groups of every policy that does not have it yet.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+                $map["$($g.Json.id)"] = $f.id
+            }
+            foreach ($c in $ctxFiles) {
+                $have = $true
+                try { Graph GET "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences/$($c.Json.id)" | Out-Null } catch { $have = $false }
+                if (-not $have) { Graph POST 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' @{ id = $c.Json.id; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null }
+            }
         }
-    }
-    else {
-        Add-Result 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all Conditional Access policies" 'Break-glass group not found' 'Group exists and is excluded everywhere' Manual $link 'Create the break-glass accounts and group first (Break-glass step), then run this step again so the group can be excluded from every Conditional Access policy.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        catch { Add-Result 'ConditionalAccess' 'Preparing groups and authentication context' $_.Exception.Message 'Prepared' Error $link $null $doc $docText; $do = $false }
     }
 
-    $au = (Graph GET ('https://graph.microsoft.com/v1.0/administrativeUnits?$filter=' + [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'"))).value | Select-Object -First 1
-    if ($au) {
-        $auMembers = @(Get-AllPages "https://graph.microsoft.com/v1.0/administrativeUnits/$($au.id)/members?`$select=id" | ForEach-Object { $_.id })
+    Set-Group 'ALSO baseline policies (one row per policy)'
+    if ($skippedE5.Count) { Add-Result 'ConditionalAccess' "ALSO E5 policies not checked ($($skippedE5.Count))" 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'These policies use Entra ID Protection (risk) or Privileged Identity Management features that are only included with Entra ID P2.' $doc $docText }
+    foreach ($r in $rows) {
+        $nm = $r.Name
+        if ($r.ByName) { Add-Result 'ConditionalAccess' $nm "Present - $($stateTxt["$($r.ByName.state)"])" 'Present' Compliant $link $why $doc $docText; continue }
+        if ($r.ByCfg) { Add-Result 'ConditionalAccess' $nm "Equivalent policy exists: '$($r.ByCfg.displayName)' ($($stateTxt["$($r.ByCfg.state)"]))" 'Present' Info $link "A policy with a different name but the same settings already covers this ALSO policy, so it is not imported again. Consider renaming it to the ALSO name or keep only one of them." $doc $docText; continue }
+        if (-not $do) { Add-Result 'ConditionalAccess' $nm 'Missing' 'Present (switched off)' Drift $link $why $doc $docText; continue }
+        try {
+            $p = $r.P
+            $b = ConvertTo-CleanBody $p.Json
+            $b['state'] = 'disabled'
+            $u = $b['conditions']['users']
+            foreach ($k in 'includeGroups', 'excludeGroups') { if ($u.Contains($k)) { $u[$k] = [object[]]@(@($u[$k]) | ForEach-Object { $map["$_"] } | Where-Object { $_ }) } }
+            if ($bgId) {
+                $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
+                if ($bgId -notin $ex) { $u['excludeGroups'] = [object[]]($ex + $bgId) }
+            }
+            $as = $p.Json.grantControls.authenticationStrength
+            if ($as -and $b['grantControls']) { $b['grantControls']['authenticationStrength'] = [ordered]@{ id = $as.id } }
+            Graph POST $caBase $b | Out-Null
+            Add-Result 'ConditionalAccess' $nm 'Missing' 'Imported (switched off)' Fixed $link $why $doc $docText
+        }
+        catch { Add-Result 'ConditionalAccess' $nm 'Missing' 'Imported (switched off)' Error $link "Import failed: $($_.Exception.Message)" $doc $docText }
+    }
+
+    Set-Group 'Your other Conditional Access policies'
+    $known = @($rows | ForEach-Object { $_.ByName.id; $_.ByCfg.id } | Where-Object { $_ })
+    foreach ($e in $existing) {
+        if ("$($e.id)" -in $known) { continue }
+        Add-Result 'ConditionalAccess' "$($e.displayName)" "Not part of the ALSO baseline - $($stateTxt["$($e.state)"])" 'Reviewed' Info $link 'This policy was created by you or someone else. It is listed so you have one overview of everything that is active. Check that it does not conflict with the ALSO baseline.' $doc $docText
+    }
+
+    Set-Group 'Duplicate policies'
+    $strict = @{}
+    foreach ($e in $existing) { $k = Get-CaFingerprint $e $true; if (-not $strict.ContainsKey($k)) { $strict[$k] = @() }; $strict[$k] += $e }
+    $dups = @($strict.Values | Where-Object { $_.Count -gt 1 })
+    if (-not $dups.Count) { Add-Result 'ConditionalAccess' 'Policies with identical settings' 'None found' 'No duplicates' Compliant $link 'Two policies with the same users, apps and controls do the same job twice and make troubleshooting harder.' $doc $docText }
+    foreach ($d in $dups) { Add-Result 'ConditionalAccess' "Duplicate policies: $(($d | ForEach-Object { $_.displayName }) -join '  |  ')" "$($d.Count) policies with identical settings" 'One policy' Drift $link 'These policies target the same users and apps and require the same controls. Keep one and remove or merge the others, otherwise changes have to be made twice and the result is hard to explain.' $doc $docText }
+
+    Set-Group 'Break-glass protection'
+    Invoke-Part 'ConditionalAccess' 'Break-glass group excluded from policies' {
+        if (-not $bgId) { Add-Result 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all policies" 'Break-glass group not found' 'Excluded everywhere' Manual $link 'Create the break-glass accounts and group first (Break-glass step), then run this step again.' $BreakGlassPdf 'Break-glass best practices (PDF)'; return }
+        $cur = @(Get-AllPages $caBase)
+        $need = @($cur | Where-Object { @($_.conditions.users.excludeGroups) -notcontains $bgId })
+        if (-not $cur.Count) { return }
+        $detail = 'If a Conditional Access policy breaks sign-in, or MFA is unavailable, the break-glass accounts must still get in. ' + $(if ($need) { 'Missing in: ' + (($need | ForEach-Object { $_.displayName }) -join '; ') } else { 'Every policy excludes the group.' })
+        Compare-Setting 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all Conditional Access policies" "$($cur.Count - $need.Count) of $($cur.Count) policies exclude it" "$($cur.Count) of $($cur.Count) policies exclude it" {
+            foreach ($pol in $need) {
+                $u = ConvertTo-CleanBody $pol.conditions.users $false
+                $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
+                $u['excludeGroups'] = [object[]]($ex + $bgId)
+                Graph PATCH "$caBase/$($pol.id)" @{ conditions = @{ users = $u } } | Out-Null
+            }
+        } $link $detail $BreakGlassPdf 'Break-glass best practices (PDF)'
+    }
+
+    Invoke-Part 'ConditionalAccess' 'Conditional Access groups in restricted management' {
+        $au = (Graph GET ('https://graph.microsoft.com/v1.0/directory/administrativeUnits?$filter=' + [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'"))).value | Select-Object -First 1
+        if (-not $au) { return }
+        $auMembers = @(Get-AllPages "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members?`$select=id" | ForEach-Object { $_.id })
         $ids = @()
         foreach ($g in $grpFiles) { if ($g.Json.displayName -like '*BSAccounts*') { continue }; $f = Find-GroupByName $g.Json.displayName; if ($f) { $ids += $f.id } }
-        if ($ids.Count) {
-            $notIn = @($ids | Where-Object { $_ -notin $auMembers })
-            Compare-Setting 'ConditionalAccess' "ALSO Conditional Access groups protected by restricted management ($BreakGlassAuName)" "$($ids.Count - $notIn.Count) of $($ids.Count) groups inside" "$($ids.Count) of $($ids.Count) groups inside" {
-                foreach ($id in $notIn) { Graph POST "https://graph.microsoft.com/v1.0/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$id" } | Out-Null }
-            } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdminUnitsManagementMenuBlade/~/AdminUnits' 'Groups used in Conditional Access decide who is protected or excluded. Putting them in the restricted management administrative unit stops anyone except the break-glass administrators from changing their membership.' ($GuideBase + '#restricted-management-admin-units') 'ALSO guide: Restricted management administrative units (Identity and access, step 11)'
-        }
+        if (-not $ids.Count) { return }
+        $notIn = @($ids | Where-Object { $_ -notin $auMembers })
+        Compare-Setting 'ConditionalAccess' "ALSO Conditional Access groups inside restricted management unit '$BreakGlassAuName'" "$($ids.Count - $notIn.Count) of $($ids.Count) groups inside" "$($ids.Count) of $($ids.Count) groups inside" {
+            foreach ($id in $notIn) { Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/groups/$id" } | Out-Null }
+        } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits' 'Groups used in Conditional Access decide who is protected or excluded. Inside the restricted management unit only the administrators of that unit can change their membership.' ($GuideBase + '#restricted-management-admin-units') 'ALSO guide: Restricted management administrative units (Identity and access, step 11)'
     }
-    Add-Result 'ConditionalAccess' 'Review, test and switch on the imported Conditional Access policies' 'Imported policies are switched off' 'Each policy tested in report-only, then enabled' Manual $link 'Open each ALSO policy, set it to Report-only, review the impact in the sign-in logs, then enable it. Turn security defaults off once the policies are on. Policies for Entra ID P2 and the Tier 0 authentication context need the matching role settings in Privileged Identity Management.' $doc $docText
+    Add-Result 'ConditionalAccess' 'Review, test and switch on the imported policies' 'Imported policies are switched off' 'Each policy tested in report-only, then enabled' Manual $link 'Open each ALSO policy, set it to Report-only, review the impact in the sign-in logs, then enable it. Turn security defaults off once the policies are on. Policies for Entra ID P2 and the Tier 0 authentication context also need the matching role settings in Privileged Identity Management.' $doc $docText
 }
 
 function Step-PrivilegedAccess {
@@ -841,37 +959,44 @@ function Step-PrivilegedAccess {
     $lic = Get-LicenseTier
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/RolesManagementMenuBlade/~/AllRoles'
     $gaId = '62e90394-69f5-4237-9190-012177145e10'
-    $active = $null
-    try {
-        $inst = @(Get-AllPages ('https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignmentScheduleInstances?$filter=' + [uri]::EscapeDataString("roleDefinitionId eq '$gaId'")))
-        $active = @($inst | Where-Object { $_.assignmentType -eq 'Assigned' } | ForEach-Object { $_.principalId } | Sort-Object -Unique)
-    }
-    catch {
-        try { $active = @(Get-AllPages ('https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$filter=' + [uri]::EscapeDataString("roleDefinitionId eq '$gaId'")) | ForEach-Object { $_.principalId } | Sort-Object -Unique) } catch { }
-    }
-    $gaWhy = 'Global Administrators can change everything. Keep permanent assignments to a minimum (at most 5, including the two break-glass accounts) and give everyone else eligible, time-limited access through Privileged Identity Management.'
-    if ($null -eq $active) { Add-Result 'PrivilegedAccess' 'Permanent Global Administrators' 'Could not be read' '5 or fewer' Manual $link $gaWhy $doc $docText }
-    elseif ($active.Count -le 5) { Add-Result 'PrivilegedAccess' 'Permanent Global Administrators' "$($active.Count)" '5 or fewer' Compliant $link $gaWhy $doc $docText }
-    else { Add-Result 'PrivilegedAccess' 'Permanent Global Administrators' "$($active.Count)" '5 or fewer' Manual $link "$gaWhy Review the list and convert surplus accounts to eligible or remove the role." $doc $docText }
-
-    if ($lic.Tier -eq 'Full' -or $lic.HasP2) {
+    Set-Group 'Global Administrators'
+    Invoke-Part 'PrivilegedAccess' 'Permanent Global Administrators' {
+        $ids = @()
         try {
+            $inst = @(Get-AllPages ('https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignmentScheduleInstances?$filter=' + [uri]::EscapeDataString("roleDefinitionId eq '$gaId'")))
+            $ids = @($inst | Where-Object { $_.assignmentType -eq 'Assigned' } | ForEach-Object { $_.principalId } | Sort-Object -Unique)
+        }
+        catch {
+            $ids = @(Get-AllPages ('https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$filter=' + [uri]::EscapeDataString("roleDefinitionId eq '$gaId'")) | ForEach-Object { $_.principalId } | Sort-Object -Unique)
+        }
+        $names = ''
+        try {
+            if ($ids.Count) {
+                $o = (Graph POST 'https://graph.microsoft.com/v1.0/directoryObjects/getByIds' @{ ids = @($ids); types = @('user', 'group', 'servicePrincipal') }).value
+                $names = ($o | ForEach-Object { if ($_.userPrincipalName) { $_.userPrincipalName } else { $_.displayName } }) -join '; '
+            }
+        }
+        catch { }
+        $why = 'Global Administrators can change everything. Keep permanent assignments to a minimum (at most 5, including the two break-glass accounts) and give everyone else eligible, time-limited access through Privileged Identity Management. ' + $(if ($names) { "Today: $names" })
+        if ($ids.Count -le 5) { Add-Result 'PrivilegedAccess' 'Number of permanent Global Administrators' "$($ids.Count)" '5 or fewer' Compliant $link $why $doc $docText }
+        else { Add-Result 'PrivilegedAccess' 'Number of permanent Global Administrators' "$($ids.Count)" '5 or fewer' Drift $link "$why Review the list and convert surplus accounts to eligible, or remove the role." $doc $docText }
+    }
+    Set-Group 'Just-in-time access and reviews'
+    if ($lic.Tier -eq 'Full' -or $lic.HasP2) {
+        Invoke-Part 'PrivilegedAccess' 'Eligible role assignments' {
             $elig = @(Get-AllPages 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances')
             Add-Result 'PrivilegedAccess' 'Eligible (just-in-time) role assignments' "$($elig.Count)" 'Used for day-to-day administration' Info $link 'Eligible assignments must be activated (with MFA and a reason) before they work, which limits the time an admin account is powerful.' $doc $docText
         }
-        catch { Add-Result 'PrivilegedAccess' 'Eligible (just-in-time) role assignments' 'Could not be read' 'Used for day-to-day administration' Manual $link 'Open Privileged Identity Management and check that administrators use eligible assignments.' $doc $docText }
-        $arDoc = $GuideBase + '#access-reviews'
-        $arText = 'ALSO guide: Access reviews (Extend identity, step 2)'
-        try {
+        $arDoc = $GuideBase + '#access-reviews'; $arText = 'ALSO guide: Access reviews (Extend identity, step 2)'
+        $arLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement'
+        Invoke-Part 'PrivilegedAccess' 'Access reviews' {
             $ar = @(Get-AllPages 'https://graph.microsoft.com/v1.0/identityGovernance/accessReviews/definitions')
-            if ($ar.Count) { Add-Result 'PrivilegedAccess' 'Access reviews' "$($ar.Count) review(s) configured" 'At least one recurring review for privileged roles and guests' Compliant 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement' 'Regular reviews remove access that is no longer needed.' $arDoc $arText }
-            else { Add-Result 'PrivilegedAccess' 'Access reviews' 'None configured' 'At least one recurring review for privileged roles and guests' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement' 'Create recurring access reviews for privileged roles, guest users and sensitive groups. Reviews cannot be created from the baseline files because they depend on your reviewers.' $arDoc $arText }
+            if ($ar.Count) { Add-Result 'PrivilegedAccess' 'Access reviews' "$($ar.Count) review(s): $(($ar | ForEach-Object { $_.displayName }) -join '; ')" 'At least one recurring review for privileged roles and guests' Compliant $arLink 'Regular reviews remove access that is no longer needed.' $arDoc $arText }
+            else { Add-Result 'PrivilegedAccess' 'Access reviews' 'None configured' 'At least one recurring review for privileged roles and guests' Manual $arLink 'Create recurring access reviews for privileged roles, guest users and sensitive groups. They depend on your reviewers, so they cannot be created from a baseline file.' $arDoc $arText }
         }
-        catch { Add-Result 'PrivilegedAccess' 'Access reviews' 'Could not be read' 'At least one recurring review' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement' 'Open Identity Governance and check access reviews for privileged roles and guests.' $arDoc $arText }
     }
-    else {
-        Add-Result 'PrivilegedAccess' 'Eligible roles and access reviews' 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'Privileged Identity Management and access reviews need Entra ID P2, so this part is skipped.' ($GuideBase + '#access-reviews') 'ALSO guide: Access reviews (Extend identity, step 2)'
-    }
+    else { Add-Result 'PrivilegedAccess' 'Eligible roles and access reviews' 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'Privileged Identity Management and access reviews need Entra ID P2, so this part is skipped.' ($GuideBase + '#access-reviews') 'ALSO guide: Access reviews (Extend identity, step 2)' }
+    Set-Group 'To do by a person'
     Add-Result 'PrivilegedAccess' 'Review application owners and admin role holders' 'Cannot be judged automatically' 'Reviewed and documented' Manual $link 'Check every administrator and the owners of enterprise applications. Remove people who do not need access. Need4Admin (linked in the ALSO guide) lists administrators and their roles in one report.' $doc $docText
 }
 
@@ -898,7 +1023,7 @@ function Get-IntuneTarget($Json) {
 }
 
 function Step-IntunePolicies {
-    Write-Step 'Intune policy baseline' 'Imports ALSO''s compliance, app protection, device security, Defender and browser policies (unassigned).'
+    Write-Step 'Intune policy baseline' 'Imports ALSO''s compliance, app protection, device security, Defender and browser policies (unassigned) and recognises policies you already have.'
     $all = 'windows', 'macos', 'ios', 'android'
     $sel = $all
     if ($Mode -eq 'Enforce' -and -not $Force) {
@@ -915,53 +1040,62 @@ function Step-IntunePolicies {
         'browser-protection'  = @('Microsoft Edge browser protection', '#browser', 'ALSO guide: Browser protection (Endpoints, step 12)')
     }
     $link = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview'
-    $nameCache = @{}
+    $norm = { param($s) ("$s" -replace '[^\p{L}\p{N}]', '').ToLower() }
+    $cache = @{}
     $manualBits = @()
     foreach ($pkg in $pk.Keys) {
         $meta = $pk[$pkg]; $doc = $GuideBase + $meta[1]
+        Set-Group $meta[0]
         try { $dir = Get-GuidePackage $pkg }
         catch { Add-Result 'IntunePolicies' $meta[0] "Package could not be downloaded: $($_.Exception.Message)" 'Imported' Manual $link 'Download the policy package from the ALSO guide and import it in Intune.' $doc $meta[2]; continue }
         $items = @()
         foreach ($x in (Get-PackageJson $dir $null)) {
             if ($x.File.Name -eq 'MigrationTable.json') { continue }
             $t = "$($x.Json.'@odata.type')"
-            if ($t -match 'mobileApp|LobApp|macOSDmg|macOSPkg' -or $x.File.Directory.Name -eq 'Applications') { $manualBits += "$($x.Json.displayName)"; continue }
+            if ($t -match 'mobileApp|LobApp|macOSDmg|macOSPkg|DefenderApp' -or $x.File.Directory.Name -eq 'Applications') { $manualBits += "$($x.Json.displayName)"; continue }
             if ($x.File.Name -match 'Auto Onboarding') { $manualBits += "$($x.File.BaseName) (tenant-specific onboarding file)"; continue }
             $target = Get-IntuneTarget $x.Json
             if (-not $target) { continue }
             $plat = Get-IntunePlatform $x.Json $x.File
             if ($plat -ne 'other' -and $plat -notin $sel) { continue }
             $nm = if ($x.Json.displayName) { $x.Json.displayName } else { $x.Json.name }
-            if (-not $nameCache.ContainsKey($target)) {
-                $nameCache[$target] = @(Get-AllPages $target | ForEach-Object { if ($_.displayName) { $_.displayName } else { $_.name } })
+            if (-not $cache.ContainsKey($target)) { $cache[$target] = @(Get-AllPages $target) }
+            $byName = $cache[$target] | Where-Object { (& $norm $(if ($_.displayName) { $_.displayName } else { $_.name })) -eq (& $norm $nm) } | Select-Object -First 1
+            $byCfg = $null
+            if (-not $byName -and $null -eq $x.Json.settings) {
+                $fp = Get-IntuneFingerprint $x.Json
+                $byCfg = $cache[$target] | Where-Object { (Get-IntuneFingerprint $_) -eq $fp } | Select-Object -First 1
             }
-            $items += [pscustomobject]@{ Name = $nm; Target = $target; Json = $x.Json; Have = ($nm -in $nameCache[$target]) }
+            $items += [pscustomobject]@{ Name = $nm; Plat = $plat; Target = $target; Json = $x.Json; ByName = $byName; ByCfg = $byCfg }
         }
         if (-not $items.Count) { continue }
-        $miss = @($items | Where-Object { -not $_.Have })
-        $detail = 'Policies are created unassigned, so nothing changes on devices yet. Assign each policy to a pilot group, check the results, then widen the scope. Missing: ' + $(if ($miss) { ($miss | ForEach-Object { $_.Name }) -join '; ' } else { 'nothing' })
-        Compare-Setting 'IntunePolicies' $meta[0] "$($items.Count - $miss.Count) of $($items.Count) present" "$($items.Count) of $($items.Count) present" {
-            $fail = @()
-            foreach ($m in $miss) {
-                try { Graph POST $m.Target (ConvertTo-CleanBody $m.Json) | Out-Null; Write-Host "   Imported: $($m.Name)" -ForegroundColor DarkGray }
-                catch { $fail += "$($m.Name): $($_.Exception.Message)" }
-            }
-            if ($fail.Count) { throw ('Not imported: ' + ($fail -join ' | ')) }
-        } $link $detail $doc $meta[2]
+        $miss = @($items | Where-Object { -not $_.ByName -and -not $_.ByCfg })
+        $do = $false
+        if ($miss.Count) { $do = Confirm-Change "Import $($miss.Count) missing policies: $($meta[0])" }
+        $why = 'Policies are created unassigned, so nothing changes on devices yet. Assign each policy to a pilot group, check the results, then widen the scope.'
+        foreach ($i in ($items | Sort-Object Name)) {
+            $label = "$($i.Name)  [$($i.Plat)]"
+            if ($i.ByName) { Add-Result 'IntunePolicies' $label 'Present' 'Present' Compliant $link $why $doc $meta[2]; continue }
+            if ($i.ByCfg) { $en = if ($i.ByCfg.displayName) { $i.ByCfg.displayName } else { $i.ByCfg.name }; Add-Result 'IntunePolicies' $label "Equivalent policy exists: '$en'" 'Present' Info $link 'A policy with a different name but the same settings already exists, so this one is not imported again.' $doc $meta[2]; continue }
+            if (-not $do) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link $why $doc $meta[2]; continue }
+            try { Graph POST $i.Target (ConvertTo-CleanBody $i.Json) | Out-Null; Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Fixed $link $why $doc $meta[2] }
+            catch { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Error $link "Import failed: $($_.Exception.Message)" $doc $meta[2] }
+        }
     }
+    Set-Group 'Apple and enrollment'
     if ($manualBits.Count) {
         Add-Result 'IntunePolicies' 'Defender for Endpoint macOS app and tenant-specific onboarding files' ($manualBits -join '; ') 'Added by an administrator' Manual 'https://security.microsoft.com/securitysettings/endpoints/onboarding' 'The macOS Defender app is a software package and the macOS onboarding file contains a key that belongs to one tenant. Download the onboarding package from the Defender portal (Settings > Endpoints > Onboarding), then add the app and profile in Intune.' ($GuideBase + '#defender-onboarding') 'ALSO guide: Defender provisioning and onboarding (Endpoints, step 10)'
     }
     if ($sel -contains 'ios' -or $sel -contains 'macos') {
-        $apDoc = $GuideBase + '#apple-enrollment'
-        $apText = 'ALSO guide: Supported platforms and Apple enrollment (Endpoints, step 3)'
+        $apDoc = $GuideBase + '#apple-enrollment'; $apText = 'ALSO guide: Supported platforms and Apple enrollment (Endpoints, step 3)'
         $apLink = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/appleEnrollment'
         try {
             $apns = Graph GET 'https://graph.microsoft.com/beta/deviceManagement/applePushNotificationCertificate'
             $days = ([datetime]$apns.expirationDateTime - (Get-Date)).Days
-            if ($days -lt 0) { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Expired on $(([datetime]$apns.expirationDateTime).ToString('yyyy-MM-dd'))" 'Valid' Manual $apLink 'iPhones, iPads and Macs stop syncing with Intune when this certificate expires. Renew it with the same Apple ID that created it.' $apDoc $apText }
-            elseif ($days -lt 30) { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Expires in $days days" 'Valid for 30 days or more' Manual $apLink 'Renew the certificate with the same Apple ID that created it before it expires.' $apDoc $apText }
-            else { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Valid until $(([datetime]$apns.expirationDateTime).ToString('yyyy-MM-dd'))" 'Valid' Compliant $apLink 'Needed to manage iPhones, iPads and Macs.' $apDoc $apText }
+            $exp = ([datetime]$apns.expirationDateTime).ToString('yyyy-MM-dd')
+            if ($days -lt 0) { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Expired on $exp" 'Valid' Manual $apLink 'iPhones, iPads and Macs stop syncing with Intune when this certificate expires. Renew it with the same Apple ID that created it.' $apDoc $apText }
+            elseif ($days -lt 30) { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Expires in $days days ($exp)" 'Valid for 30 days or more' Manual $apLink 'Renew the certificate with the same Apple ID that created it before it expires.' $apDoc $apText }
+            else { Add-Result 'IntunePolicies' 'Apple MDM push certificate' "Valid until $exp" 'Valid' Compliant $apLink 'Needed to manage iPhones, iPads and Macs.' $apDoc $apText }
         }
         catch { Add-Result 'IntunePolicies' 'Apple MDM push certificate' 'Not configured' 'Configured (only needed for iPhone, iPad and Mac)' Manual $apLink 'Apple devices can only be managed after you create an MDM push certificate in Intune with an Apple ID owned by your company. Skip this if you do not manage Apple devices.' $apDoc $apText }
     }
@@ -973,51 +1107,118 @@ function Step-IntunePolicies {
 }
 
 function Step-Purview {
-    Write-Step 'Microsoft Purview baseline' 'Checks whether ALSO''s sensitivity labels, label policy, DLP and retention policies exist.'
+    Write-Step 'Microsoft Purview baseline' 'Checks every part of ALSO''s Purview baseline: tenant switches, labels, label policy, DLP, AI protection and retention, plus other Purview protections.'
     $repo = 'https://github.com/CoC-MS/ALSO-Microsoft-Security-Purview'
     $doc = $GuideBase + '#purview-baseline'
     $docText = 'ALSO guide: Purview baseline (Data security and governance, step 1)'
-    $link = 'https://purview.microsoft.com/informationprotection/labels'
     $tier = (Get-LicenseTier).Tier
-    $deploy = "Deploy with ALSO's Purview toolkit ($repo): run Deploy-PurviewBestPractice.ps1 in PowerShell 7 or later from the complete repository folder, review PurviewConfig.psd1 first and start with -WhatIf. DLP policies start in simulation mode."
-    $chk = {
-        param($Setting, $Ok, $Cur, $Exp, $Detail, $Lnk)
-        if ($Ok) { Add-Result 'Purview' $Setting $Cur $Exp Compliant $Lnk $Detail $doc $docText }
-        else { Add-Result 'Purview' $Setting $Cur $Exp Manual $Lnk "$Detail $deploy" $doc $docText }
+    $lbl = 'https://purview.microsoft.com/informationprotection/labels'
+    $dlpL = 'https://purview.microsoft.com/datalossprevention/policies'
+    $script:pvMissing = 0
+    $row = {
+        param($Setting, $Ok, $CurOk, $CurMiss, $Exp, $Detail, $Lnk)
+        if ($Ok) { Add-Result 'Purview' $Setting $CurOk $Exp Compliant $Lnk $Detail $doc $docText }
+        else { $script:pvMissing++; Add-Result 'Purview' $Setting $CurMiss $Exp Drift $Lnk $Detail $doc $docText }
     }
-    try {
-        $labels = @(Get-Label -ErrorAction Stop | ForEach-Object { $_.DisplayName })
-        $want = 'Public', 'General', 'Confidential', 'Highly Confidential'
-        $miss = @($want | Where-Object { $_ -notin $labels })
-        & $chk 'Sensitivity labels (Public, General, Confidential, Highly Confidential)' ($miss.Count -eq 0) $(if ($miss) { "Missing: $($miss -join ', ')" } else { 'All present' }) 'All four labels present' 'Labels classify documents and e-mail so protection can follow the data.' $link
+    $modeTxt = { param($p) switch ("$($p.Mode)") { 'Enable' { 'On' } 'TestWithNotifications' { 'Simulation with notifications' } 'TestWithoutNotifications' { 'Simulation' } 'Disable' { 'Off' } default { "$($p.Mode)" } } }
+    $sim = @()
+
+    Set-Group 'Tenant settings'
+    Invoke-Part 'Purview' 'Audit' {
+        $a = Get-AdminAuditLogConfig
+        & $row 'Unified audit log' ($a.UnifiedAuditLogIngestionEnabled -eq $true) 'On' 'Off' 'On' 'Purview and Defender rely on the audit log for investigations, DLP reports and Copilot interaction logging.' 'https://purview.microsoft.com/audit/auditsearch'
     }
-    catch { Add-Result 'Purview' 'Sensitivity labels' "Not readable: $($_.Exception.Message)" 'Labels present' Manual $link "Check the labels in the Purview portal. $deploy" $doc $docText }
-    try {
-        $lp = @(Get-LabelPolicy -ErrorAction Stop | ForEach-Object { $_.Name })
-        $has = $lp -contains 'BP-ALSO - Default Label Policy'
-        & $chk 'Label policy (BP-ALSO - Default Label Policy)' $has $(if ($has) { 'Present' } else { 'Not found' }) 'Present' 'The label policy publishes the labels to users and sets the default label.' $link
-    }
-    catch { Add-Result 'Purview' 'Label policy' "Not readable: $($_.Exception.Message)" 'Present' Manual $link "Check the label policy in the Purview portal. $deploy" $doc $docText }
-    $dlpLink = 'https://purview.microsoft.com/datalossprevention/policies'
-    try {
-        $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop)
-        $bp = @($dlp | Where-Object { $_.Name -like 'BP-ALSO - DLP*' })
-        & $chk 'Baseline data loss prevention policies (BP-ALSO - DLP)' ($bp.Count -gt 0) $(if ($bp.Count) { "$($bp.Count) policy(ies)" } else { 'Not found' }) 'Present' 'DLP policies warn or block when sensitive data such as card numbers, IBAN or social security numbers is shared.' $dlpLink
-        if ($tier -eq 'Full') {
-            $e5 = @($dlp | Where-Object { $_.Name -like 'E5-PS-ALSO*' })
-            & $chk 'Advanced DLP policies (E5-PS-ALSO: endpoint DLP and Copilot protection)' ($e5.Count -gt 0) $(if ($e5.Count) { "$($e5.Count) policy(ies)" } else { 'Not found' }) 'Present' 'Endpoint DLP and the policy that blocks Copilot from processing Highly Confidential content need Microsoft 365 E5 or the Purview suite.' $dlpLink
+    Add-Result 'Purview' 'Sensitivity labels for PDF files and labels in SharePoint and OneDrive' 'Cannot be read automatically' 'Turned on' Manual $lbl 'The toolkit turns on labeling for PDF files and the SharePoint and OneDrive integration (SharePoint Online setting). Check in Purview under Information protection > Labels.' $doc $docText
+
+    Set-Group 'Sensitivity labels (one row per label)'
+    Invoke-Part 'Purview' 'Sensitivity labels' {
+        $labels = @(Get-Label -ErrorAction Stop)
+        $byId = @{}; foreach ($l in $labels) { $byId["$($l.Guid)"] = $l }
+        $tree = [ordered]@{ 'Public' = @(); 'General' = @('Anyone (unrestricted)', 'All Employees (unrestricted)'); 'Confidential' = @('All Employees', 'Trusted People'); 'Highly Confidential' = @('All Employees', 'Specific People') }
+        foreach ($p in $tree.Keys) {
+            $parent = $labels | Where-Object { $_.DisplayName -eq $p -and -not $_.ParentId } | Select-Object -First 1
+            & $row "Label: $p" ([bool]$parent) 'Present' 'Missing' 'Present' 'Sensitivity labels classify documents and e-mail so that protection can follow the data.' $lbl
+            foreach ($s in $tree[$p]) {
+                $child = $labels | Where-Object { $_.DisplayName -eq $s -and $_.ParentId -and $parent -and "$($_.ParentId)" -eq "$($parent.Guid)" } | Select-Object -First 1
+                & $row "Sub-label: $p > $s" ([bool]$child) 'Present' 'Missing' 'Present' 'Sub-labels give the same classification different protection, for example encryption for specific people.' $lbl
+            }
         }
-        else { Add-Result 'Purview' 'Advanced DLP policies (E5-PS-ALSO)' 'Not licensed' 'Requires Microsoft 365 E5, E7 or the Purview suite' Skipped $dlpLink 'Endpoint DLP and Copilot protection need Microsoft 365 E5, E7 or the Purview suite.' $doc $docText }
-        $sim = @(($bp + @($dlp | Where-Object { $_.Name -like 'E5-PS-ALSO*' })) | Where-Object { $_.Mode -ne 'Enable' })
-        if ($sim.Count) { Add-Result 'Purview' 'DLP policies still in simulation mode' "$($sim.Count) policy(ies): $(($sim | ForEach-Object { $_.Name }) -join '; ')" 'Turned on after reviewing the simulation results' Manual $dlpLink 'The baseline starts every DLP policy in simulation mode. Review the matches in Activity explorer, then switch each policy to On.' $doc $docText }
+        $extra = @($labels | Where-Object { -not $_.ParentId -and $_.DisplayName -notin $tree.Keys })
+        if ($extra) { Add-Result 'Purview' 'Other sensitivity labels in your tenant' (($extra | ForEach-Object { $_.DisplayName }) -join '; ') 'Reviewed' Info $lbl 'These labels are not part of the ALSO baseline. Check that they do not overlap with it, because two label sets confuse users.' $doc $docText }
     }
-    catch { Add-Result 'Purview' 'Data loss prevention policies' "Not readable: $($_.Exception.Message)" 'Present' Manual $dlpLink "Check the DLP policies in the Purview portal. $deploy" $doc $docText }
-    try {
-        $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop | Where-Object { $_.Name -like 'BP-ALSO*' })
-        Add-Result 'Purview' 'Optional retention policy (BP-ALSO - Exchange 7-year retention)' $(if ($ret.Count) { 'Present' } else { 'Not deployed' }) 'Only after legal review' Info 'https://purview.microsoft.com/datalifecyclemanagement/policies' 'Retention keeps mail for years and cannot easily be reversed. It is optional and should only be switched on after a legal and compliance review.' $doc $docText
+
+    Set-Group 'Label policy'
+    Invoke-Part 'Purview' 'Label policy' {
+        $lps = @(Get-LabelPolicy -ErrorAction Stop)
+        $lp = $lps | Where-Object { $_.Name -eq 'BP-ALSO - Default Label Policy' } | Select-Object -First 1
+        & $row 'Label policy: BP-ALSO - Default Label Policy' ([bool]$lp) 'Present' 'Not found' 'Present' 'The label policy publishes the labels to users, sets the default label and requires a label on documents.' $lbl
+        if ($lp) {
+            $cnt = @($lp.Labels).Count
+            & $row 'Label policy publishes the four baseline labels' ($cnt -ge 4) "$cnt labels published" "$cnt labels published" 'At least 4 labels' 'Public, Anyone (unrestricted), All Employees and All Employees (Highly Confidential) are published to users.' $lbl
+            & $row 'Label policy is switched on' ($lp.Enabled -ne $false) 'On' 'Off' 'On' 'A disabled policy does not show the labels to users.' $lbl
+        }
+        $others = @($lps | Where-Object { $_.Name -ne 'BP-ALSO - Default Label Policy' })
+        if ($others) { Add-Result 'Purview' 'Other label policies in your tenant' (($others | ForEach-Object { $_.Name }) -join '; ') 'Reviewed' Info $lbl 'Several label policies can give users different labels or defaults. Check they do not conflict with the baseline.' $doc $docText }
     }
-    catch { }
-    Add-Result 'Purview' 'Tenant switches for labels: PDF labeling, labels in SharePoint and OneDrive, co-authoring' 'Cannot be read automatically' 'Turned on' Manual 'https://purview.microsoft.com/informationprotection/labels' 'Turn on labels for Office and PDF files in SharePoint and OneDrive (including co-authoring) in the Purview portal under Information Protection > Labels. The toolkit documentation lists the exact switches.' $doc $docText
+
+    Set-Group 'Data loss prevention (one row per policy)'
+    Invoke-Part 'Purview' 'Data loss prevention' {
+        $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop)
+        $names = [ordered]@{
+            'BP-ALSO - DLP - Confidential and HC external (EXO)'                = 'Blocks mail labelled Confidential or Highly Confidential from leaving the organization.'
+            'BP-ALSO - DLP - Confidential and HC external (SPO+ODB)'            = 'Blocks external sharing of SharePoint and OneDrive files labelled Confidential or Highly Confidential.'
+            'BP-ALSO - DLP - Credit Card Numbers (EXO)'                         = 'Detects credit card numbers in external mail.'
+            'BP-ALSO - DLP - IBAN and Bank Account Numbers (EXO)'               = 'Detects IBAN numbers in external mail.'
+            'BP-ALSO - DLP - EU Social Security Numbers (EXO)'                  = 'Detects EU social security numbers in external mail.'
+            'BP-ALSO - DLP - Swiss AHV Numbers (EXO)'                           = 'Detects Swiss AHV numbers in external mail.'
+            'BP-ALSO - DLP - Passport Numbers DACH-EU (EXO)'                    = 'Detects DACH and EU passport numbers in external mail.'
+            'BP-ALSO - DLP - Tax ID and VAT DACH (EXO)'                         = 'Detects DACH tax and VAT numbers in external mail.'
+        }
+        foreach ($n in $names.Keys) {
+            $p = $dlp | Where-Object { $_.Name -eq $n } | Select-Object -First 1
+            $cur = if ($p) { "Present - $(& $modeTxt $p)" } else { 'Not found' }
+            & $row $n ([bool]$p) $cur $cur 'Present' $names[$n] $dlpL
+            if ($p -and $p.Mode -ne 'Enable') { $sim += $n }
+        }
+        $e5 = [ordered]@{
+            'E5-PS-ALSO - DLP - Endpoint Confidential and HC'          = 'Endpoint DLP audits copy, print, USB and network-share activity for labelled content.'
+            'E5-PS-ALSO - AI - Block Copilot for Highly Confidential' = 'Stops Microsoft 365 Copilot from processing content labelled Highly Confidential.'
+        }
+        foreach ($n in $e5.Keys) {
+            if ($tier -ne 'Full') { Add-Result 'Purview' $n 'Not licensed' 'Requires Microsoft 365 E5, E7 or the Purview suite' Skipped $dlpL $e5[$n] $doc $docText; continue }
+            $p = $dlp | Where-Object { $_.Name -eq $n } | Select-Object -First 1
+            $cur = if ($p) { "Present - $(& $modeTxt $p)" } else { 'Not found' }
+            & $row $n ([bool]$p) $cur $cur 'Present' $e5[$n] $dlpL
+            if ($p -and $p.Mode -ne 'Enable') { $sim += $n }
+        }
+        $other = @($dlp | Where-Object { $_.Name -notlike 'BP-ALSO*' -and $_.Name -notlike 'E5-PS-ALSO*' })
+        if ($other) { Add-Result 'Purview' 'Your other DLP policies' (($other | ForEach-Object { "$($_.Name) ($(& $modeTxt $_))" }) -join '; ') 'Reviewed' Info $dlpL 'These DLP policies are not part of the ALSO baseline. Check for overlap with the baseline policies so users are not warned twice.' $doc $docText }
+    }
+    if ($sim.Count) { Add-Result 'Purview' 'DLP policies still in simulation mode' ($sim -join '; ') 'Switched on after reviewing the simulation results' Manual $dlpL 'The baseline starts every DLP policy in simulation mode so nothing is blocked by surprise. Review the matches in Activity explorer, then switch each policy to On.' $doc $docText }
+
+    Set-Group 'Retention'
+    Invoke-Part 'Purview' 'Retention' {
+        $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop)
+        $r = $ret | Where-Object { $_.Name -eq 'BP-ALSO - Exchange 7-year retention' } | Select-Object -First 1
+        Add-Result 'Purview' 'Optional: BP-ALSO - Exchange 7-year retention' $(if ($r) { 'Present' } else { 'Not deployed' }) 'Only after legal review' Info 'https://purview.microsoft.com/datalifecyclemanagement/policies' 'Retention keeps mail for seven years and then deletes it. It is optional and should only be switched on after a legal and compliance review.' $doc $docText
+        $o = @($ret | Where-Object { $_.Name -ne 'BP-ALSO - Exchange 7-year retention' })
+        Add-Result 'Purview' 'Your other retention policies' $(if ($o) { ($o | ForEach-Object { $_.Name }) -join '; ' } else { 'None' }) 'Reviewed' Info 'https://purview.microsoft.com/datalifecyclemanagement/policies' 'Retention policies decide how long data is kept or deleted. Make sure they match your legal requirements.' $doc $docText
+    }
+
+    Set-Group 'Other Purview protections (not part of the ALSO baseline)'
+    $extras = @(
+        @{ N = 'Auto-labeling policies'; C = { @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop) }; D = 'Auto-labeling applies labels to content that contains sensitive information, without relying on users.'; L = 'https://purview.microsoft.com/informationprotection/autolabeling' }
+        @{ N = 'Insider risk management policies'; C = { @(Get-InsiderRiskPolicy -ErrorAction Stop) }; D = 'Insider risk policies detect risky activity such as data leaks by departing employees. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/insiderriskmanagement' }
+        @{ N = 'Communication compliance policies'; C = { @(Get-SupervisoryReviewPolicyV2 -ErrorAction Stop) }; D = 'Communication compliance reviews messages for policy violations. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/communicationcompliance' }
+    )
+    foreach ($x in $extras) {
+        try { $c = & $x.C; Add-Result 'Purview' $x.N $(if ($c.Count) { "$($c.Count) configured: $((($c | ForEach-Object { $_.Name }) -join '; '))" } else { 'None configured' }) 'Considered for your organization' Info $x.L $x.D $doc $docText }
+        catch { Add-Result 'Purview' $x.N 'Not available or not readable' 'Considered for your organization' Info $x.L "$($x.D) The check returned: $($_.Exception.Message)" $doc $docText }
+    }
+
+    if ($script:pvMissing -gt 0) {
+        Add-Result 'Purview' "Deploy the missing Purview baseline items ($($script:pvMissing))" 'Not deployed' 'Deployed with ALSO''s Purview toolkit' Manual $repo "Run Deploy-PurviewBestPractice.ps1 from ALSO's Purview toolkit ($repo) in PowerShell 7 or later, from the complete repository folder. Review Purview/Config/PurviewConfig.psd1 first and start with -WhatIf. DLP policies start in simulation mode." $doc $docText
+    }
 }
 
 function Step-GuideManual {
@@ -1080,7 +1281,10 @@ $buildSections = {
     if (-not $items) { continue }
     $bad = @($items | Where-Object { $_.Status -in 'Drift', 'Error' }).Count
     $badge = if ($ManualOnly) { "<span class='pill Manual'>$($items.Count) to do</span>" } elseif ($bad) { "<span class='pill Drift'>$bad to fix</span>" } else { "<span class='pill Compliant'>all good</span>" }
+    $lastGrp = '~'
     $rows = foreach ($r in $items) {
+        if ($r.Group -and $r.Group -ne $lastGrp) { "<tr class='grp'><td colspan='5'>$(& $enc $r.Group)</td></tr>" }
+        $lastGrp = $r.Group
         $l = if ($r.Link) { "<a href='$(& $enc $r.Link)' target='_blank'>Open in portal &rarr;</a>" } else { '' }
         $d = if ($r.Detail) { "<div class='why'>$(& $enc $r.Detail)$(if ($r.Doc) { " <a href='$(& $enc $r.Doc)' target='_blank'>$(& $enc $r.DocText) &rarr;</a>" })</div>" } else { '' }
         "<tr><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b>$d</td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
@@ -1111,6 +1315,7 @@ table{border-collapse:collapse;width:100%}th{text-align:left;font-size:.78rem;te
 td{padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:.9rem;word-break:break-word}td.st{white-space:nowrap}
 .why{margin-top:6px;font-size:.82rem;font-weight:400;color:#4a5a6a;line-height:1.45}a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
 .next{background:#fff;border:1px solid #dde3ea;border-left:5px solid #00757d;border-radius:10px;padding:8px 24px 22px;margin:28px 0}.next p{color:#5b6b7c;max-width:760px}.btn{display:inline-block;background:#0b5cab;color:#fff!important;padding:10px 20px;border-radius:8px;font-weight:600}.btn:hover{text-decoration:none;background:#094a8c}
+.grp td{background:#eef6f6;font-weight:600;color:#00575d;padding:8px;border-bottom:1px solid #d3e6e7}
 .pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.78rem;font-weight:600;color:#fff;background:#9aa7b4}
 .pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
 '@
