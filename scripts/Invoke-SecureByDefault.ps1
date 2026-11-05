@@ -619,15 +619,16 @@ $html = Join-Path $OutputPath "sbd-$Mode-$stamp.html"
 $script:Results | ConvertTo-Json -Depth 4 | Set-Content $json -Encoding UTF8
 $enc = { param($s) [Net.WebUtility]::HtmlEncode("$s") }
 $cats = [ordered]@{
-    Licensing = 'Licensing overview'; AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
+    AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
-$total = @($script:Results).Count
+$reportResults = @($script:Results | Where-Object Step -ne 'Licensing')
+$total = $reportResults.Count
 $cards = foreach ($st in 'Compliant', 'Fixed', 'Drift', 'Manual', 'Info', 'Skipped', 'Error') {
-    $n = @($script:Results | Where-Object Status -eq $st).Count
+    $n = @($reportResults | Where-Object Status -eq $st).Count
     "<div class='card $st'><b>$n</b><span>$($label[$st])</span></div>"
 }
 $buildSections = {
@@ -647,7 +648,7 @@ $buildSections = {
 }
 $autoSections = & $buildSections $false
 $manualSections = & $buildSections $true
-$manualCount = @($script:Results | Where-Object Status -eq 'Manual').Count
+$manualCount = @($reportResults | Where-Object Status -eq 'Manual').Count
 $autoCount = $total - $manualCount
 $tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual actions ($manualCount)</button></div>"
 $manualIntro = "<p class='intro'>These items cannot be read or changed automatically because Microsoft offers no API for them, or they need a person to decide. Work through them in the portal using the links and guides.</p>"
