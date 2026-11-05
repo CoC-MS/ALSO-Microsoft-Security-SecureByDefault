@@ -62,7 +62,7 @@
   <p class="sub reveal">ALSO's JSON configuration files cover policies and baselines. Some prerequisites live outside them: tenant switches, emergency access, authentication methods, enrollment and connector state. This tool closes that gap.</p>
   <div class="grid">
     <div class="card reveal"><div class="ic">🔍</div><h3>Discover before enforce</h3><p>Default mode is strictly read-only and produces a drift report against the reference state.</p></div>
-    <div class="card reveal"><div class="ic">🧭</div><h3>Guided step by step</h3><p>Each change is explained and confirmed. Supports <code>-WhatIf</code> for dry runs.</p></div>
+    <div class="card reveal"><div class="ic">🧭</div><h3>Guided step by step</h3><p>Each change is explained and confirmed.</p></div>
     <div class="card reveal"><div class="ic">🛡️</div><h3>Safe by design</h3><p>Run the script from your own controlled environment, such as an admin workstation or a secured jump host. It uses your interactive Global Administrator sign-in, runs locally, and keeps reports on your machine.</p></div>
   </div>
 </section>
@@ -103,10 +103,7 @@ cd ALSO-Microsoft-Security-SecureByDefault
 # 1. discovery (read-only)
 ./scripts/Invoke-SecureByDefault.ps1
 
-# 2. dry-run selected steps
-./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce -Steps AuditLog,Fido2 -WhatIf
-
-# 3. guided enforcement
+# 2. guided enforcement
 ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce</pre>
 </section>
 <section id="next">

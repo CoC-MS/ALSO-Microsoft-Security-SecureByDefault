@@ -17,8 +17,7 @@ git clone https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault
 cd ALSO-Microsoft-Security-SecureByDefault
 
 ./scripts/Invoke-SecureByDefault.ps1                        # 1. discovery (read-only)
-./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce -WhatIf  # 2. dry run
-./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce          # 3. guided enforcement
+./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce          # 2. guided enforcement
 ```
 
 Run a subset of steps with `-Steps AuditLog,Fido2`. Reports are written to `sbd-reports` as HTML and JSON.
