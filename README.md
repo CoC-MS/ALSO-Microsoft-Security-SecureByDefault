@@ -8,7 +8,7 @@ Site: https://coc-ms.github.io/ALSO-Microsoft-Security-SecureByDefault/
 
 **A Global Administrator account is required** for all steps (discovery warns if you are not one; enforcement stops). Everything the script needs is installed for the current user on demand.
 
-On first run the sign-in uses Microsoft's "Microsoft Graph Command Line Tools" enterprise application. Approve the permission request as Global Administrator ("Consent on behalf of your organization"); it then appears under Entra > Enterprise applications. If the browser sign-in fails, the script falls back to a device code sign-in.
+On first run the sign-in uses Microsoft's "Microsoft Graph Command Line Tools" enterprise application. Approve the permission request as Global Administrator ("Consent on behalf of your organization"); it then appears under Entra > Enterprise applications. Each sign-in is an interactive browser sign-in (no device code); before every one the script states which service it is for and what access it needs.
 
 If scripts are blocked on your machine, allow them for this session only: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`. Do not run from `C:\Windows\System32`; clone to a normal folder.
 

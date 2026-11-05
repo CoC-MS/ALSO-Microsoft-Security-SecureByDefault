@@ -124,16 +124,25 @@ Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
 
 Initialize-Module Microsoft.Graph.Authentication
-# Sign-in uses Microsoft's "Microsoft Graph Command Line Tools" enterprise application. A Global Administrator
-# must approve the requested permissions on first run. WAM is disabled because it fails in many terminals.
-Write-Host 'Sign in as a Global Administrator. On first run, approve the permission request ("Consent on behalf of your organization").' -ForegroundColor Yellow
+$needsExo = [bool]($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' })
+$needsSpo = $Steps -contains 'SharePoint'
+$signInCount = 1 + [int]$needsExo + [int]$needsSpo
+$script:signInNo = 0
+function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
+    $script:signInNo++
+    Write-Host ''
+    Write-Host "SIGN-IN $($script:signInNo) of ${signInCount}: $Service" -ForegroundColor Yellow
+    Write-Host "  Why    : $Why"
+    Write-Host "  Access : $Access"
+    Write-Host '  A browser window opens. Sign in with your Global Administrator account.'
+}
+
+Show-SignIn 'Microsoft Graph (Entra ID, Intune, tenant settings)' 'Reads and, in Enforce mode, changes tenant-wide settings.' ($graphScopes -join ', ')
+Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
 try { Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction SilentlyContinue } catch { }
 try { Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop }
-catch {
-    Write-Host "Browser sign-in failed ($($_.Exception.Message.Split("`n")[0])). Falling back to device code sign-in." -ForegroundColor Yellow
-    Connect-MgGraph -Scopes $graphScopes -NoWelcome -UseDeviceCode -ErrorAction Stop
-}
-$gaRole = '62e90394-69f5-4237-9190-012177145e10'
+catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message). Close any stuck sign-in windows and run the script again." }
+Write-Host '  Signed in to Microsoft Graph.' -ForegroundColor Green$gaRole = '62e90394-69f5-4237-9190-012177145e10'
 $myRoles = (Graph GET 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId').value.roleTemplateId
 if ($gaRole -notin $myRoles) {
     $msg = 'The signed-in account is not an active Global Administrator. All steps require Global Administrator.'
@@ -145,7 +154,13 @@ $initialDomain = ($org.verifiedDomains | Where-Object { $_.isInitial }).name
 Write-Host "Tenant: $($org.displayName) ($($org.id)), initial domain: $initialDomain"
 if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.Split('.')[0])-admin.sharepoint.com" }
 
-if ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }) { Initialize-Module ExchangeOnlineManagement; Connect-ExchangeOnline -ShowBanner:$false -Device }
+if ($needsExo) {
+    Show-SignIn 'Exchange Online / Security & Compliance' 'Unified audit log and Defender for Office 365 preset policies.' 'Exchange Online administration (Global Administrator role)'
+    Initialize-Module ExchangeOnlineManagement
+    try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
+    catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
+    Write-Host '  Signed in to Exchange Online.' -ForegroundColor Green
+}
 #endregion
 
 #region steps
@@ -298,7 +313,9 @@ function Step-AuthMethods {
 function Step-SharePoint {
     Write-Step 'SharePoint & OneDrive external sharing' 'Tighten tenant-level sharing and default links.'
     Initialize-Module Microsoft.Online.SharePoint.PowerShell
+    Show-SignIn 'SharePoint Online admin' 'Tenant-level external sharing settings.' "SharePoint administration at $SharePointAdminUrl"
     Connect-SPOService -Url $SharePointAdminUrl
+    Write-Host '  Signed in to SharePoint Online.' -ForegroundColor Green
     $t = Get-SPOTenant
     $ref = $script:Reference.sharePoint
     $link = "$SharePointAdminUrl/_layouts/15/online/AdminHome.aspx#/sharing"
