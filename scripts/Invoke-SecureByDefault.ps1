@@ -24,9 +24,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet('Discover', 'Enforce')][string]$Mode = 'Discover',
-    [ValidateSet('AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
+    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance')]
-    [string[]]$Steps = @('AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
+    [string[]]$Steps = @('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
@@ -65,6 +65,7 @@ function Add-Result {
         'Drift'     { "${Setting}: currently '$Current', should be '$Expected'" }
         'Error'     { "${Setting}: could not change from '$Current' to '$Expected'" }
         'Skipped'   { "${Setting}: skipped - $Current" }
+        'Info'      { if ($Step -eq 'Licensing') { "${Setting}: $Current" } else { "${Setting}: $Current (reference: $Expected)" } }
         default     { "${Setting}: $Current (reference: $Expected)" }
     }
     Write-Host ("  [{0,-9}] {1}" -f $Status, $msg) -ForegroundColor $color
@@ -229,6 +230,31 @@ if ($needsExo) {
 #endregion
 
 #region steps
+function Step-Licensing {
+    Write-Step 'License check' 'Finds which Microsoft security products this tenant is licensed for, so you know which recommendations apply today.'
+    $link = 'https://admin.microsoft.com/#/subscriptions'
+    $skus = @((Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value | Where-Object { $_.capabilityStatus -eq 'Enabled' })
+    $plans = @($skus | ForEach-Object { $_.servicePlans } | Where-Object { $_.provisioningStatus -ne 'Disabled' } | ForEach-Object { $_.servicePlanName })
+    $names = ($skus | ForEach-Object { $_.skuPartNumber } | Sort-Object -Unique) -join ', '
+    Add-Result 'Licensing' 'Active subscriptions in this tenant' $(if ($names) { $names } else { 'None found' }) 'Used to decide which recommendations apply' Info $link 'These are the license SKUs found in the tenant. The checks below are derived from the service plans inside them.'
+    $products = @(
+        @('Microsoft Entra ID P1 (Conditional Access)', 'AAD_PREMIUM$', 'Conditional Access, restricted management administrative units and authentication strengths are available.', '#identity-policies'),
+        @('Microsoft Entra ID P2 (ID Protection, PIM)', 'AAD_PREMIUM_P2', 'Risk-based Conditional Access, Identity Protection and Privileged Identity Management are available.', '#identity-policies'),
+        @('Microsoft Intune', 'INTUNE_A$|INTUNE_SMBIZ', 'Device enrollment, compliance, LAPS and Defender policies via Intune are available.', '#endpoints'),
+        @('Defender for Business / Endpoint', 'WINDEFATP|MDE_SMB|MDE_LITE|DEFENDER_ENDPOINT_P1', 'Defender for Endpoint onboarding and security settings are available.', '#defender-onboarding'),
+        @('Defender for Office 365', 'ATP_ENTERPRISE|EOP_ENTERPRISE_PREMIUM|THREAT_INTELLIGENCE', 'Safe Links, Safe Attachments and preset security policies for email are available.', '#office-protection'),
+        @('Defender for Identity', '^ATA$|DEFENDER_FOR_IDENTITY', 'Identity threat detection on domain controllers is available (extend identity protection).', '#defender-identity'),
+        @('Defender for Cloud Apps and app governance', 'ADALLOM_S_(STANDALONE|O365|DISCOVERY)|MCAS|DEFENDER_FOR_CLOUD_APPS', 'Cloud app discovery, risky app blocking and app governance are available.', '#cloud-apps'),
+        @('Microsoft Purview (information protection / DLP)', 'MIP_S_CLP[12]|INFORMATION_PROTECTION_COMPLIANCE_PREMIUM|PURVIEW', 'Sensitivity labels and data loss prevention for the Purview baseline are available.', '#purview-baseline'),
+        @('Microsoft 365 Copilot', 'COPILOT', 'Copilot readiness recommendations apply directly to this tenant.', '#copilot-preparation')
+    )
+    foreach ($p in $products) {
+        $has = [bool]($plans | Where-Object { $_ -match $p[1] })
+        if ($has) { Add-Result 'Licensing' $p[0] 'Licensed' 'Licensed' Info $link $p[2] ($GuideBase + $p[3]) 'ALSO guide: see the matching section' }
+        else { Add-Result 'Licensing' $p[0] 'Not licensed' 'Licensed' Skipped $link ('Not found in this tenant, so recommendations that depend on it are skipped or marked as not applicable. Needs the right license or suite to use: ' + $p[2]) ($GuideBase + $p[3]) 'ALSO guide: see the matching section' }
+    }
+}
+
 function Step-AuditLog {
     Write-Step 'Unified audit log' 'Required for investigations, Defender and Purview.'
     $cfg = Get-AdminAuditLogConfig
@@ -593,7 +619,7 @@ $html = Join-Path $OutputPath "sbd-$Mode-$stamp.html"
 $script:Results | ConvertTo-Json -Depth 4 | Set-Content $json -Encoding UTF8
 $enc = { param($s) [Net.WebUtility]::HtmlEncode("$s") }
 $cats = [ordered]@{
-    AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
+    Licensing = 'Licensing overview'; AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
