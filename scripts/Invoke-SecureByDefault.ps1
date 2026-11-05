@@ -419,7 +419,7 @@ function Step-Fido2 {
     $f = Graph GET $uri
     Compare-Setting 'Fido2' 'Passkey (FIDO2)' (Cap $f.state) 'Enabled' {
         Graph PATCH $uri @{ '@odata.type' = '#microsoft.graph.fido2AuthenticationMethodConfiguration'; state = 'enabled'; includeTargets = @(@{ targetType = 'group'; id = 'all_users'; isRegistrationRequired = $false }) }
-    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods'
+    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods' 'Passkeys (FIDO2 security keys) are phishing-resistant and the strongest sign-in method Entra offers. Allow them for all users so people and break-glass accounts can register a key.' ($GuideBase + '#authentication') 'ALSO guide: Allow strong authentication methods (Identity and access, step 6)'
 }
 
 function Step-AuthMethods {
@@ -430,6 +430,9 @@ function Step-AuthMethods {
     $names = @{ Fido2 = 'Passkey (FIDO2)'; MicrosoftAuthenticator = 'Microsoft Authenticator'; Sms = 'SMS'; TemporaryAccessPass = 'Temporary Access Pass'
         SoftwareOath = 'Third-party software OATH tokens'; Voice = 'Voice call'; Email = 'Email OTP'; X509Certificate = 'Certificate-based authentication'
         HardwareOath = 'Hardware OATH tokens'; VerifiableCredentials = 'Verified ID'; QRCodePin = 'QR code' }
+    $authDoc = $GuideBase + '#authentication'
+    $authText = 'ALSO guide: Allow strong authentication methods (Identity and access, step 6)'
+    $authWhy = 'Authentication methods decide how users prove who they are. Passwordless and phishing-resistant methods (passkeys, Authenticator, Temporary Access Pass) should be on; weak methods that can be intercepted (SMS, voice, email OTP) should be off. Methods marked Review depend on your organization. Read ALSO''s recommendations for the full reasoning.'
     $wanted = @{ Fido2 = 'enabled'; MicrosoftAuthenticator = 'enabled'; TemporaryAccessPass = 'enabled'; Sms = 'disabled'; Voice = 'disabled'; Email = 'disabled' }
     foreach ($m in $pol.authenticationMethodConfigurations) {
         $mid = $m.id
@@ -438,11 +441,11 @@ function Step-AuthMethods {
         if ($wanted.ContainsKey($mid)) {
             $otype = $m.'@odata.type'
             $newState = $wanted[$mid]
-            Compare-Setting 'AuthMethods' $label (Cap $m.state) (Cap $newState) { Graph PATCH "$base/authenticationMethodConfigurations/$mid" @{ '@odata.type' = $otype; state = $newState } | Out-Null } $link
+            Compare-Setting 'AuthMethods' $label (Cap $m.state) (Cap $newState) { Graph PATCH "$base/authenticationMethodConfigurations/$mid" @{ '@odata.type' = $otype; state = $newState } | Out-Null } $link $authWhy $authDoc $authText
         }
-        else { Add-Result 'AuthMethods' $label (Cap $m.state) 'Review for your organization' Info $link }
+        else { Add-Result 'AuthMethods' $label (Cap $m.state) 'Review for your organization' Info $link $authWhy $authDoc $authText }
     }
-    Add-Result 'AuthMethods' 'Authenticator push is not phishing-resistant' 'Enforce phishing-resistant MFA with Conditional Access authentication strengths' 'Authentication strength policy assigned' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/AuthStrengths'
+    Add-Result 'AuthMethods' 'Authenticator push is not phishing-resistant' 'Enforce phishing-resistant MFA with Conditional Access authentication strengths' 'Authentication strength policy assigned' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/AuthStrengths' 'Authenticator push can still be phished by prompt bombing or real-time proxies. For admins and sensitive access, create a Conditional Access policy that requires a phishing-resistant authentication strength (passkeys / FIDO2, Windows Hello, certificates).' $authDoc $authText
 }
 
 function Step-SharePoint {
@@ -523,7 +526,8 @@ function Step-MdoPresets {
         }
     }
     if (-not $found) {
-        Add-Result 'MdoPresets' 'Standard preset security policy' 'Not configured' 'Standard preset turned on for all recipients' Manual $link
+        Add-Result 'MdoPresets' 'Standard preset security policy' 'Not configured' 'Standard preset turned on for all recipients' Manual $link 'Standard preset protection applies Microsoft''s recommended anti-spam, anti-phishing, Safe Links and Safe Attachments settings to all recipients in one step. Microsoft provides no API to create it, so turn it on once in the Defender portal. Then read ALSO''s recommendations for Defender for Office 365 and for SPF, DKIM and DMARC.' ($GuideBase + '#office-protection') 'ALSO guide: Defender for Office 365 protection (Email, apps and collaboration, step 1)'
+        Add-Result 'MdoPresets' 'SPF, DKIM and DMARC email authentication' 'Cannot be checked automatically' 'Configured for every sending domain' Manual 'https://security.microsoft.com/authentication' 'SPF, DKIM and DMARC stop others from spoofing your domains and improve delivery of your own mail. Verify each domain in the Defender portal and in your DNS.' ($GuideBase + '#email-authentication') 'ALSO guide: SPF, DKIM and DMARC (Email, apps and collaboration, step 2)'
         Write-Host '   Microsoft does not allow creating the preset policies through any API or PowerShell cmdlet. Turn Standard protection on once in the Defender portal (Preset security policies > Standard protection > Manage). After that, this script can verify and enable/disable it.' -ForegroundColor DarkGray
     }
 }
@@ -554,7 +558,7 @@ function Step-DefenderEndpoint {
 function Step-DefenderGuidance {
     Write-Step 'Defender XDR guidance' 'Settings Microsoft offers only in the portal (no public API to read or set them).'
     $na = 'Cannot be read automatically (no Microsoft API)'
-    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications' 'Make sure the right people (security team or your partner) receive Defender incident emails so high-severity incidents are not missed.'
+    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications' 'Make sure the right people (security team or your partner) receive Defender incident emails so high-severity incidents are not missed. Also make sure alert policies notify a monitored mailbox.' ($GuideBase + '#alerts') 'ALSO guide: Make sure Defender alerts reach the right people (Email, apps and collaboration, step 3)'
     $plans = @()
     try { $plans = @((Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value | Where-Object { $_.capabilityStatus -eq 'Enabled' } | ForEach-Object { $_.servicePlans } | ForEach-Object { $_.servicePlanName }) } catch { Write-Warning "Could not read licenses: $($_.Exception.Message)" }
     $need = 'requires Microsoft 365 E5 (or E5 Security), the Defender or Purview suite, or a standalone license'
@@ -562,8 +566,8 @@ function Step-DefenderGuidance {
     $hasMda = [bool]($plans | Where-Object { $_ -match 'ADALLOM_S_(STANDALONE|O365|DISCOVERY)|MCAS|CLOUD_APP_SECURITY|DEFENDER_FOR_CLOUD_APPS' })
     $mdiLink = 'https://security.microsoft.com/securitysettings/identities'
     $mdiText = 'ALSO guide: Defender for Identity (Extend identity, step 1)'
-    $mcaText = 'ALSO guide: Defender for Cloud Apps (Discover and protect cloud apps, steps 1-3)'
-    $agText = 'ALSO guide: App governance (Discover and protect cloud apps, steps 1-3)'
+    $mcaText = 'ALSO guide: Integrate Defender for Cloud Apps with Defender for Endpoint (Email, apps and collaboration, step 1 of the E5 section)'
+    $agText = 'ALSO guide: Configure app governance (Email, apps and collaboration, step 3 of the E5 section)'
     if ($hasMdi) {
         Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' $na 'Ready' Manual $mdiLink 'Defender for Identity watches domain controllers and Entra for identity attacks. Deploy sensors on domain controllers and check the health status in the Defender portal.' ($GuideBase + '#defender-identity') $mdiText
     }
