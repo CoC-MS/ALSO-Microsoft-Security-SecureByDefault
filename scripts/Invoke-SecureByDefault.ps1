@@ -666,7 +666,7 @@ $autoSections = & $buildSections $false
 $manualSections = & $buildSections $true
 $manualCount = @($reportResults | Where-Object Status -eq 'Manual').Count
 $autoCount = $total - $manualCount
-$tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual actions ($manualCount)</button></div>"
+$tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks and actions ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual checks and actions ($manualCount)</button></div>"
 $manualIntro = "<p class='intro'>These items cannot be read or changed automatically because Microsoft offers no API for them, or they need a person to decide. Work through them in the portal using the links and guides.</p>"
 $js = "function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
 $css = @'
