@@ -425,13 +425,48 @@ $json = Join-Path $OutputPath "sbd-$Mode-$stamp.json"
 $html = Join-Path $OutputPath "sbd-$Mode-$stamp.html"
 $script:Results | ConvertTo-Json -Depth 4 | Set-Content $json -Encoding UTF8
 $enc = { param($s) [Net.WebUtility]::HtmlEncode("$s") }
-$rows = $script:Results | ForEach-Object {
-    $l = if ($_.Link) { "<a href='$(& $enc $_.Link)'>open</a>" } else { '' }
-    "<tr class='$($_.Status)'><td>$($_.Step)</td><td>$(& $enc $_.Setting)</td><td>$(& $enc $_.Current)</td><td>$(& $enc $_.Expected)</td><td>$($_.Status)</td><td>$l</td></tr>"
+$cats = [ordered]@{
+    AuditLog = 'Auditing & compliance'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
+    BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
+    SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
+    MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
 }
-@"
-<html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>body{font-family:Segoe UI;margin:2em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:6px}th{background:#0a2540;color:#fff}.Drift{background:#fff3cd}.Error{background:#f8d7da}.Compliant,.Fixed{background:#d4edda}.Manual{background:#d1ecf1}</style></head><body><h1>ALSO Secure by Default - $Mode</h1><p>$(& $enc $org.displayName) - $(Get-Date)</p><table><tr><th>Step</th><th>Setting</th><th>Current</th><th>Expected</th><th>Status</th><th>Portal</th></tr>$($rows -join '')</table></body></html>
-"@ | Set-Content $html -Encoding UTF8
+$label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
+$total = @($script:Results).Count
+$cards = foreach ($st in 'Compliant', 'Fixed', 'Drift', 'Manual', 'Error', 'Info') {
+    $n = @($script:Results | Where-Object Status -eq $st).Count
+    "<div class='card $st'><b>$n</b><span>$($label[$st])</span></div>"
+}
+$sections = foreach ($cat in ($cats.Values | Select-Object -Unique)) {
+    $items = @($script:Results | Where-Object { $cats[$_.Step] -eq $cat })
+    if (-not $items) { continue }
+    $bad = @($items | Where-Object { $_.Status -in 'Drift', 'Error' }).Count
+    $badge = if ($bad) { "<span class='pill Drift'>$bad to fix</span>" } else { "<span class='pill Compliant'>all good</span>" }
+    $rows = foreach ($r in $items) {
+        $l = if ($r.Link) { "<a href='$(& $enc $r.Link)' target='_blank'>Open in portal &rarr;</a>" } else { '' }
+        "<tr><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b></td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
+    }
+    "<section><h2>$(& $enc $cat) $badge</h2><table><tr><th>State</th><th>Setting</th><th>Current value</th><th>Expected</th><th></th></tr>$($rows -join '')</table></section>"
+}
+$css = @'
+body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fa;color:#1d2b3a}
+header{background:#fff;border-bottom:1px solid #dde3ea;padding:20px 40px}
+header h1{margin:0;font-size:1.5rem}header p{margin:4px 0 0;color:#5b6b7c}
+main{max-width:1200px;margin:24px auto;padding:0 24px}
+.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
+.card{flex:1;min-width:130px;background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:14px 18px;border-top:4px solid #9aa7b4}
+.card b{display:block;font-size:1.8rem}.card span{color:#5b6b7c;font-size:.85rem}
+.card.Compliant,.card.Fixed{border-top-color:#2e8b57}.card.Drift{border-top-color:#d98e04}.card.Manual{border-top-color:#00757d}.card.Error{border-top-color:#c0392b}
+section{background:#fff;border:1px solid #dde3ea;border-radius:10px;margin-bottom:20px;padding:6px 18px 14px}
+h2{font-size:1.15rem;display:flex;align-items:center;gap:10px}
+table{border-collapse:collapse;width:100%}th{text-align:left;font-size:.78rem;text-transform:uppercase;color:#5b6b7c;padding:6px 8px;border-bottom:2px solid #e6ebf0}
+td{padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:.9rem;word-break:break-word}td.st{white-space:nowrap}
+a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
+.pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.78rem;font-weight:600;color:#fff;background:#9aa7b4}
+.pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
+'@
+$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$($sections -join '')</main></body></html>"
+[IO.File]::WriteAllText($html, $page, (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "`nSummary:" -ForegroundColor Cyan
 $script:Results | Group-Object Status | ForEach-Object { Write-Host ("  {0,-10} {1}" -f $_.Name, $_.Count) }
