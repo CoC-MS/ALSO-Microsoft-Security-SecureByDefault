@@ -69,6 +69,7 @@ function Add-Result {
         default     { "${Setting}: $Current (reference: $Expected)" }
     }
     Write-Host ("  [{0,-9}] {1}" -f $Status, $msg) -ForegroundColor $color
+    if ($Status -eq 'Error' -and $Detail) { Write-Host "              Reason: $Detail" -ForegroundColor Red }
     if ($Link -and $Status -in 'Manual', 'Drift') { Write-Host "              -> $Link" -ForegroundColor DarkCyan }
     if ($Doc -and $Status -in 'Manual', 'Drift', 'Skipped') { Write-Host "              Guide: $Doc" -ForegroundColor DarkCyan }
 }
@@ -122,7 +123,7 @@ function Compare-Setting {
     if ("$Current" -eq "$Expected") { Add-Result $Step $Setting $Current $Expected Compliant $Link $Detail $Doc $DocText; return }
     if ($Fix -and (Confirm-Change "$Setting - change from '$Current' to '$Expected'")) {
         try { & $Fix; Add-Result $Step $Setting $Current $Expected Fixed $Link $Detail $Doc $DocText }
-        catch { Add-Result $Step $Setting $Current $Expected Error $Link $Detail $Doc $DocText; Write-Warning $_.Exception.Message }
+        catch { Add-Result $Step $Setting $Current $Expected Error $Link "$($_.Exception.Message)" $Doc $DocText }
     }
     else { Add-Result $Step $Setting $Current $Expected Drift $Link $Detail $Doc $DocText }
 }
@@ -137,8 +138,15 @@ function Graph($Method, $Uri, $Body) {
     try { Invoke-MgGraphRequest @p }
     catch {
         $m = $_.Exception.Message
-        if ($_.ErrorDetails.Message) { try { $m = ($_.ErrorDetails.Message | ConvertFrom-Json).error.message } catch { $m = $_.ErrorDetails.Message } }
-        throw "$m [$Method $(($Uri -split '\?')[0] -replace 'https://graph.microsoft.com/','')]"
+        $raw = "$($_.ErrorDetails.Message)"
+        if (-not $raw) { try { $raw = $_.Exception.Response.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { } }
+        if ($raw) {
+            try { $e = ($raw | ConvertFrom-Json).error; $m = (@($e.code, $e.message) | Where-Object { $_ }) -join ': ' } catch { $m = $raw }
+        }
+        $status = ''
+        try { if ($_.Exception.Response.StatusCode) { $status = " HTTP $([int]$_.Exception.Response.StatusCode)" } } catch { }
+        if (-not "$m".Trim()) { $m = 'No error details returned' }
+        throw "$m [$Method $(($Uri -split '\?')[0] -replace 'https://graph.microsoft.com/','')$status]"
     }
 }
 
@@ -166,7 +174,7 @@ $graphScopes = if ($Mode -eq 'Enforce') {
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
     'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
     'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess',
-    'DeviceManagementApps.ReadWrite.All', 'Application.Read.All', 'AccessReview.Read.All'
+    'DeviceManagementApps.ReadWrite.All', 'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
@@ -179,7 +187,7 @@ if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be cha
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool]($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' })
 $needsPurview = [bool]($Steps -contains 'Purview')
-$signInCount = 1 + [int]$needsExo + 2 * [int]$needsPurview
+$signInCount = 1 + [int]$needsExo + [int]$needsPurview
 $script:signInNo = 0
 function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     $script:signInNo++
@@ -233,7 +241,7 @@ function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clie
                 if ($cand -and ($cand['code'] -or $cand['error'])) {
                     $q = $cand
                     $ok = [bool]$q['code']
-                    $msg = if (-not $ok) { "Sign-in to $Service failed. Return to PowerShell for details." } elseif ($Next) { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>You can close this tab. Next: <b>$Next</b>. A new sign-in window opens in a few seconds (if you are already signed in with that service it may continue without a window)." } else { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>This was the <b>last</b> sign-in. You can close this tab and return to PowerShell." }
+                    $msg = if (-not $ok) { "Sign-in to $Service failed. Return to PowerShell for details." } elseif ($Next) { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>You can close this tab. Next: <b>$Next</b>. A new sign-in window opens in a few seconds (if you are already signed in with that service it may continue without a window)." } else { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>This was the <b>last</b> sign-in. You can close this tab, return to the PowerShell window and wait while the report is generated." }
                     $body = [Text.Encoding]::UTF8.GetBytes("<html><head><title>ALSO Secure by Default</title></head><body style='font-family:Segoe UI;margin:3em'><h2>ALSO Secure by Default</h2><p>$msg</p></body></html>")
                     $hdr = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
                     $stream.Write($hdr, 0, $hdr.Length); $stream.Write($body, 0, $body.Length); $stream.Flush()
@@ -272,6 +280,8 @@ if ($gaRole -notin $myRoles) {
     Write-Warning "$msg Discovery results may be incomplete."
 }
 $org = (Graph GET 'https://graph.microsoft.com/v1.0/organization').value[0]
+$me = Graph GET 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'
+$script:MeId = $me.id; $script:MeUpn = $me.userPrincipalName
 $initialDomain = ($org.verifiedDomains | Where-Object { $_.isInitial }).name
 Write-Host "Tenant: $($org.displayName) ($($org.id)), initial domain: $initialDomain"
 if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.Split('.')[0])-admin.sharepoint.com" }
@@ -296,7 +306,7 @@ if ($needsPurview) {
     Initialize-Module ExchangeOnlineManagement
     $ippsOk = $false
     try {
-        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com' 'Microsoft Purview' 'SharePoint Online'
+        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'         'Microsoft Purview' ''
         Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true
     }
     catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
@@ -306,17 +316,7 @@ if ($needsPurview) {
         else { throw "Purview sign-in failed: $($_.Exception.Message)" }
     } }
     Write-Host '  Signed in to Microsoft Purview.' -ForegroundColor Green
-    Show-SignIn 'SharePoint Online admin (Purview tenant settings)' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: reads and, after you approve, turns on sensitivity label support for SharePoint/OneDrive and PDF files (required for labels to work on documents).' } else { 'DISCOVER mode: only READS the SharePoint settings for sensitivity labels. Nothing is changed.' }) 'SharePoint Online administration (Global Administrator role)'
     $script:SpoOk = $false
-    try {
-        Initialize-Module Microsoft.Online.SharePoint.PowerShell
-        Write-Host '  SharePoint uses Microsoft''s own sign-in. If you are already signed in with this account, no window opens and the existing session is reused. If a window does open, it may appear behind PowerShell.' -ForegroundColor DarkGray
-        Connect-SPOService -Url $SharePointAdminUrl -ErrorAction Stop
-        $null = Get-SPOTenant -ErrorAction Stop
-        $script:SpoOk = $true
-        Write-Host '  Connected to SharePoint Online (verified by reading the tenant settings).' -ForegroundColor Green
-    }
-    catch { Write-Host "  SharePoint sign-in failed: $($_.Exception.Message)" -ForegroundColor Yellow; Write-Host '  The SharePoint label settings will be listed as manual checks.' -ForegroundColor Yellow }
 }
 #endregion
 
@@ -355,7 +355,19 @@ function Step-AuditLog {
     Write-Step 'Unified audit log' 'Required for investigations, Defender and Purview.'
     $cfg = Get-AdminAuditLogConfig
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
-        Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true
+        try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop }
+        catch {
+            if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
+            Write-Host '   Exchange needs "organization customization" turned on first. Doing that now (can take a minute)...' -ForegroundColor DarkGray
+            Enable-OrganizationCustomization -ErrorAction Stop
+            $done = $false
+            foreach ($try in 1..6) {
+                try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break }
+                catch { Start-Sleep -Seconds 10 }
+            }
+            if (-not $done) { throw 'Organization customization is still being enabled. Run the script again in a few minutes.' }
+        }
+        if (-not (Get-AdminAuditLogConfig).UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
 }
 
@@ -440,7 +452,9 @@ function Step-Consent {
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings'
     $w = Graph GET 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
     Compare-Setting 'Consent' 'Admin consent request workflow enabled' $w.isEnabled 'True' {
-        if (-not $AdminConsentReviewerIds) { throw 'Provide -AdminConsentReviewerIds (user object ids) to enable the workflow.' }
+        $rev = @($AdminConsentReviewerIds)
+        if (-not $rev.Count) { $rev = @($script:MeId); Write-Host "   No reviewers were given, so you ($($script:MeUpn)) are added as the reviewer. Add more reviewers later in Entra ID." -ForegroundColor DarkGray }
+        $AdminConsentReviewerIds = $rev
         Graph PUT 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy' @{
             isEnabled = $true; notifyReviewers = $true; remindersEnabled = $true; requestDurationInDays = $ref.requestDurationInDays
             reviewers = @($AdminConsentReviewerIds | ForEach-Object { @{ query = "/users/$_"; queryType = 'MicrosoftGraph' } })
@@ -697,6 +711,14 @@ function Step-IntuneEnrollment {
     } $link
 }
 
+function Set-DeviceRegPolicy([scriptblock]$Edit) {
+    $uri = 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
+    $cur = Graph GET $uri
+    foreach ($k in @($cur.Keys | Where-Object { $_ -like '@odata.*' })) { $cur.Remove($k) }
+    & $Edit $cur
+    Graph PUT $uri $cur | Out-Null
+}
+
 function Step-Laps {
     Write-Step 'Local admin & LAPS (Entra device settings)' 'Remove standing local admin; enable Entra LAPS.'
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DeviceSettings'
@@ -705,19 +727,19 @@ function Step-Laps {
     $lapsDoc = $GuideBase + '#local-admin'
     $lapsText = 'ALSO guide: LAPS via policy templates (Endpoints, step 4)'
     $lapsWhy = 'Entra LAPS lets devices store a unique, rotating local administrator password in Entra ID, so one stolen local password cannot be reused on other devices. This switch only allows the feature. To actually deploy it, create the Windows LAPS policy in Intune (Endpoint security > Account protection) using ALSO''s policy templates and test password recovery - see step 4 under Endpoint management and protection in the ALSO guide.'
-    Compare-Setting 'Laps' 'Enable Microsoft Entra Local Administrator Password Solution (LAPS)' (YN $dr.localAdminPassword.isEnabled) 'Yes' { Graph PATCH $uri @{ localAdminPassword = @{ isEnabled = $true } } } $link $lapsWhy $lapsDoc $lapsText
+    Compare-Setting 'Laps' 'Enable Microsoft Entra Local Administrator Password Solution (LAPS)' (YN $dr.localAdminPassword.isEnabled) 'Yes' { Set-DeviceRegPolicy { param($d) if (-not $d.localAdminPassword) { $d.localAdminPassword = @{} }; $d.localAdminPassword.isEnabled = $true } } $link $lapsWhy $lapsDoc $lapsText
     $regDoc = $GuideBase + '#device-registration'
     $mfaCur = if ("$($dr.multiFactorAuthConfiguration)" -eq 'required') { 'Yes' } else { 'No' }
-    Compare-Setting 'Laps' 'Require multifactor authentication to register or join devices (legacy device setting)' $mfaCur 'No' { Graph PATCH $uri @{ multiFactorAuthConfiguration = 'notRequired' } } $link 'This old per-tenant switch is replaced by a Conditional Access policy (user action: Register or join devices) that requires MFA. The legacy switch and the Conditional Access policy conflict, so the reference state is No here and MFA is enforced through Conditional Access instead. Deploy that policy from ALSO''s templates - see step 1 under Endpoint management and protection in the ALSO guide.' $regDoc 'ALSO guide: MFA when registering devices (Endpoints, step 1)'
+    Compare-Setting 'Laps' 'Require multifactor authentication to register or join devices (legacy device setting)' $mfaCur 'No' { Set-DeviceRegPolicy { param($d) $d.multiFactorAuthConfiguration = 'notRequired' } } $link 'This old per-tenant switch is replaced by a Conditional Access policy (user action: Register or join devices) that requires MFA. The legacy switch and the Conditional Access policy conflict, so the reference state is No here and MFA is enforced through Conditional Access instead. Deploy that policy from ALSO''s templates - see step 1 under Endpoint management and protection in the ALSO guide.' $regDoc 'ALSO guide: MFA when registering devices (Endpoints, step 1)'
     Compare-Setting 'Laps' 'Global administrators become local admin on Entra-joined devices' (YN $dr.azureADJoin.localAdmins.enableGlobalAdmins) 'No' {
-        Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ enableGlobalAdmins = $false } } } } $link 'Global administrators should not automatically be local admins on every Entra-joined device. This limits the damage if a global admin account is compromised. Use LAPS for controlled local admin access instead.' $lapsDoc $lapsText
+        Set-DeviceRegPolicy { param($d) $d.azureADJoin.localAdmins.enableGlobalAdmins = $false } } $link 'Global administrators should not automatically be local admins on every Entra-joined device. This limits the damage if a global admin account is compromised. Use LAPS for controlled local admin access instead.' $lapsDoc $lapsText
     $ru = @{ '#microsoft.graph.noDeviceRegistrationMembership' = 'None (registering user is not local admin)'
         '#microsoft.graph.allDeviceRegistrationMembership' = 'All registering users'
         '#microsoft.graph.enumeratedDeviceRegistrationMembership' = 'Selected users and groups' }
     $curType = "$($dr.azureADJoin.localAdmins.registeringUsers.'@odata.type')"
     $curRu = if ($ru.ContainsKey($curType)) { $ru[$curType] } else { "Unknown ($curType)" }
     Compare-Setting 'Laps' 'Registering user is added as local administrator on join' $curRu $ru['#microsoft.graph.noDeviceRegistrationMembership'] {
-        Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ registeringUsers = @{ '@odata.type' = '#microsoft.graph.noDeviceRegistrationMembership' } } } } } $link 'The user who joins a device should not become its local administrator. Set to None so users run as standard users.' $lapsDoc $lapsText
+        Set-DeviceRegPolicy { param($d) $d.azureADJoin.localAdmins.registeringUsers = @{ '@odata.type' = '#microsoft.graph.noDeviceRegistrationMembership' } } } $link 'The user who joins a device should not become its local administrator. Set to None so users run as standard users.' $lapsDoc $lapsText
 }
 
 function Step-MdoPresets {
@@ -1009,7 +1031,14 @@ function Step-ConditionalAccess {
         if ($haveCtx.ContainsKey("$($c.Json.id)")) { Add-Result 'ConditionalAccess' $cn 'Exists' 'Exists' Compliant $link $ctxWhy $doc $docText; continue }
         if (-not $doCtx) { Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Drift $link $ctxWhy $doc $docText; continue }
         try {
-            Graph POST 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' @{ id = $c.Json.id; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null
+            $ctxBody = @{ id = $c.Json.id; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true }
+            $ctxUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences'
+            try { Graph POST $ctxUri $ctxBody | Out-Null }
+            catch {
+                $first = $_.Exception.Message
+                try { Graph PATCH "$ctxUri/$($c.Json.id)" @{ displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null }
+                catch { throw "$first | retry: $($_.Exception.Message)" }
+            }
             Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Fixed $link $ctxWhy $doc $docText
         }
         catch { Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Error $link "Could not create it: $($_.Exception.Message)" $doc $docText }
@@ -1219,7 +1248,10 @@ function Step-IntunePolicies {
             if ($i.ByCfg) { $en = if ($i.ByCfg.displayName) { $i.ByCfg.displayName } else { $i.ByCfg.name }; Add-Result 'IntunePolicies' $label "Equivalent policy exists: '$en'" 'Present' Info $link 'A policy with a different name but the same settings already exists, so this one is not imported again.' $doc $meta[2]; continue }
             if ($selPol -notcontains $i) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link $why $doc $meta[2]; continue }
             try { Graph POST $i.Target (ConvertTo-CleanBody $i.Json) | Out-Null; Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Fixed $link $why $doc $meta[2] }
-            catch { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Error $link "Import failed: $($_.Exception.Message)" $doc $meta[2] }
+            catch {
+                if ($pkg -eq 'defender-onboarding') { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Manual $link "This Defender onboarding profile could not be imported automatically ($($_.Exception.Message)). It usually needs the Defender for Endpoint connection and your tenant's onboarding file first: finish the Defender connection steps, then import it in Intune." $doc $meta[2] }
+                else { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Error $link "$($_.Exception.Message)" $doc $meta[2] }
+            }
         }
     }
     Set-Group 'Your existing Intune policies (already in your tenant)'
@@ -1337,7 +1369,7 @@ function Step-Purview {
             }
             else { & $addRow $g1 'Sensitivity labels for PDF files' 'Built in' 'On' Compliant 'Microsoft now supports labels on PDF files by default, so there is no setting to change.' $spoLink $false }
         }
-        else { & $addRow $g1 'Sensitivity labels in SharePoint, OneDrive and for PDF files' 'Could not be read (SharePoint sign-in not available)' 'On' Manual 'Open the SharePoint admin center > Settings > Sensitivity labels and confirm that label support is on. New tenants have it on already.' $spoLink $false }
+        else { & $addRow $g1 'Sensitivity labels in SharePoint, OneDrive and for PDF files' 'Cannot be read automatically' 'On' Manual 'Open the SharePoint admin center > Settings > Sensitivity labels and confirm that label support (and PDF support) is on. New tenants have it on already.' $spoLink $false }
 
         $g2 = 'ALSO baseline (suggested): Sensitivity labels'; $g2x = 'Your existing tenant: Sensitivity labels'
         $labels = @()
