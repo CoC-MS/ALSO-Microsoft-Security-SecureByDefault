@@ -939,35 +939,54 @@ function Step-ConditionalAccess {
             [pscustomobject]@{ P = $p; Name = $nm; ByName = $byName; ByCfg = $byCfg; Fp = $wfp; Sim = $sim }
         })
     $missing = @($rows | Where-Object { -not $_.ByName -and -not $_.ByCfg })
-    $do = $false
     $map = @{}
-    if ($missing.Count) { $do = Confirm-Change "Import $($missing.Count) missing ALSO Conditional Access policies (switched off)" }
-    if ($do) {
+    $ref = @()
+    foreach ($r0 in $rows) { foreach ($k in 'includeGroups', 'excludeGroups') { $ref += @($r0.P.Json.conditions.users.$k) } }
+    $ref = @($ref | Where-Object { $_ } | Sort-Object -Unique)
+    $grpState = @()
+    foreach ($g in $grpFiles) {
+        if ($g.Json.id -notin $ref) { continue }
+        $gn = $g.Json.displayName
+        if ($gn -like '*BSAccounts*' -and $bgId) { $map["$($g.Json.id)"] = $bgId; continue }
+        $f = $null; try { $f = Find-GroupByName $gn } catch { }
+        if ($f) { $map["$($g.Json.id)"] = $f.id }
+        $grpState += [pscustomobject]@{ G = $g; Name = $gn; Found = $f }
+    }
+    $needGrp = @($grpState | Where-Object { -not $_.Found })
+    $haveCtx = @{}
+    try { foreach ($c0 in @(Get-AllPages 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences')) { $haveCtx["$($c0.id)"] = $true } } catch { }
+    $needCtx = @($ctxFiles | Where-Object { -not $haveCtx.ContainsKey("$($_.Json.id)") })
+
+    Set-Group 'Groups and authentication contexts used by the ALSO policies'
+    $grpWhy = 'Some ALSO Conditional Access policies include or exclude specific groups (for example admins, service accounts or exclusions). The policies need these groups to exist; they are created empty and you add the members.'
+    $ctxWhy = 'Authentication contexts let a policy apply to a sensitive action, for example activating a Tier 0 role. The ALSO policies that refer to them only work when the contexts exist.'
+    $doGrp = $false; $doCtx = $false
+    if ($needGrp.Count) { $doGrp = Confirm-Change "Create $($needGrp.Count) missing group(s) used by ALSO Conditional Access policies: $(($needGrp | ForEach-Object { $_.Name }) -join ', ')" }
+    if ($needCtx.Count) { $doCtx = Confirm-Change "Create $($needCtx.Count) missing authentication context(s): $(($needCtx | ForEach-Object { $_.Json.displayName }) -join ', ')" }
+    foreach ($gs in $grpState) {
+        if ($gs.Found) { Add-Result 'ConditionalAccess' "Group: $($gs.Name)" 'Exists' 'Exists' Compliant $link $grpWhy $doc $docText; continue }
+        if (-not $doGrp) { Add-Result 'ConditionalAccess' "Group: $($gs.Name)" 'Missing' 'Created (empty)' Drift $link $grpWhy $doc $docText; continue }
         try {
-            $ref = @()
-            foreach ($m in $missing) { foreach ($k in 'includeGroups', 'excludeGroups') { $ref += @($m.P.Json.conditions.users.$k) } }
-            $ref = @($ref | Where-Object { $_ } | Sort-Object -Unique)
-            foreach ($g in $grpFiles) {
-                if ($g.Json.id -notin $ref) { continue }
-                $gn = $g.Json.displayName
-                if ($gn -like '*BSAccounts*' -and $bgId) { $map["$($g.Json.id)"] = $bgId; continue }
-                $f = Find-GroupByName $gn
-                if (-not $f) {
-                    $nick = ($gn -replace '[^A-Za-z0-9]', ''); if ($nick.Length -gt 60) { $nick = $nick.Substring(0, 60) }
-                    $f = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $gn; description = 'ALSO Conditional Access baseline group'; mailEnabled = $false; securityEnabled = $true; mailNickname = $nick }
-                    Write-Host "   Created group: $gn" -ForegroundColor DarkGray
-                }
-                $map["$($g.Json.id)"] = $f.id
-            }
-            foreach ($c in $ctxFiles) {
-                $have = $true
-                try { Graph GET "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences/$($c.Json.id)" | Out-Null } catch { $have = $false }
-                if (-not $have) { Graph POST 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' @{ id = $c.Json.id; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null }
-            }
+            $nick = ($gs.Name -replace '[^A-Za-z0-9]', ''); if ($nick.Length -gt 60) { $nick = $nick.Substring(0, 60) }
+            $f = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $gs.Name; description = 'ALSO Conditional Access baseline group'; mailEnabled = $false; securityEnabled = $true; mailNickname = $nick }
+            $map["$($gs.G.Json.id)"] = $f.id
+            Add-Result 'ConditionalAccess' "Group: $($gs.Name)" 'Missing' 'Created (empty)' Fixed $link $grpWhy $doc $docText
         }
-        catch { Add-Result 'ConditionalAccess' 'Preparing groups and authentication context' $_.Exception.Message 'Prepared' Error $link $null $doc $docText; $do = $false }
+        catch { Add-Result 'ConditionalAccess' "Group: $($gs.Name)" 'Missing' 'Created (empty)' Error $link "Could not create the group: $($_.Exception.Message)" $doc $docText }
+    }
+    foreach ($c in $ctxFiles) {
+        $cn = "Authentication context: $($c.Json.displayName)"
+        if ($haveCtx.ContainsKey("$($c.Json.id)")) { Add-Result 'ConditionalAccess' $cn 'Exists' 'Exists' Compliant $link $ctxWhy $doc $docText; continue }
+        if (-not $doCtx) { Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Drift $link $ctxWhy $doc $docText; continue }
+        try {
+            Graph POST 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' @{ id = $c.Json.id; displayName = $c.Json.displayName; description = "$($c.Json.description)"; isAvailable = $true } | Out-Null
+            Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Fixed $link $ctxWhy $doc $docText
+        }
+        catch { Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Error $link "Could not create it: $($_.Exception.Message)" $doc $docText }
     }
 
+    $do = $false
+    if ($missing.Count) { $do = Confirm-Change "Import $($missing.Count) missing ALSO Conditional Access policies (switched off)" }
     Set-Group 'ALSO baseline policies (one row per policy)'
     if ($skippedE5.Count) { Add-Result 'ConditionalAccess' "ALSO E5 policies not checked ($($skippedE5.Count))" 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'These policies use Entra ID Protection (risk) or Privileged Identity Management features that are only included with Entra ID P2.' $doc $docText }
     foreach ($r in $rows) {
