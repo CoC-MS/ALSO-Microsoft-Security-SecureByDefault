@@ -74,8 +74,9 @@
 
 <section id="start">
   <h2 class="reveal">Get started</h2>
-  <p class="sub reveal">Requires a Global Administrator (or equivalent) account. Everything the script needs is installed for the current user on demand.</p>
-<pre class="code reveal">git clone https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault
+  <p class="sub reveal"><strong>A Global Administrator account is required</strong> for all steps. On first run, approve the permission request for the &ldquo;Microsoft Graph Command Line Tools&rdquo; enterprise application (consent on behalf of your organization). Everything else is installed for the current user on demand.</p>
+<pre class="code reveal"># if scripts are blocked: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+git clone https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault
 cd ALSO-Microsoft-Security-SecureByDefault
 
 # 1. discovery (read-only)

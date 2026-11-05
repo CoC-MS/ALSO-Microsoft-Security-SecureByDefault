@@ -104,7 +104,8 @@ function Initialize-Module([string]$Name) {
         Write-Host "   Installing module $Name (CurrentUser)..." -ForegroundColor DarkGray
         Install-Module $Name -Scope CurrentUser -Force -AllowClobber
     }
-    Import-Module $Name -ErrorAction Stop
+    if ($Name -like 'Microsoft.Online.SharePoint*' -and $PSVersionTable.PSEdition -eq 'Core') { Import-Module $Name -UseWindowsPowerShell -WarningAction SilentlyContinue -ErrorAction Stop }
+    else { Import-Module $Name -ErrorAction Stop }
 }
 #endregion
 
@@ -123,10 +124,21 @@ Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
 
 Initialize-Module Microsoft.Graph.Authentication
+# Sign-in uses Microsoft's "Microsoft Graph Command Line Tools" enterprise application. A Global Administrator
+# must approve the requested permissions on first run. WAM is disabled because it fails in many terminals.
+Write-Host 'Sign in as a Global Administrator. On first run, approve the permission request ("Consent on behalf of your organization").' -ForegroundColor Yellow
+try { Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction SilentlyContinue } catch { }
 try { Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop }
 catch {
-    Write-Host 'Interactive sign-in unavailable, falling back to device code sign-in.' -ForegroundColor Yellow
-    Connect-MgGraph -Scopes $graphScopes -NoWelcome -UseDeviceCode
+    Write-Host "Browser sign-in failed ($($_.Exception.Message.Split("`n")[0])). Falling back to device code sign-in." -ForegroundColor Yellow
+    Connect-MgGraph -Scopes $graphScopes -NoWelcome -UseDeviceCode -ErrorAction Stop
+}
+$gaRole = '62e90394-69f5-4237-9190-012177145e10'
+$myRoles = (Graph GET 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId').value.roleTemplateId
+if ($gaRole -notin $myRoles) {
+    $msg = 'The signed-in account is not an active Global Administrator. All steps require Global Administrator.'
+    if ($Mode -eq 'Enforce') { throw $msg }
+    Write-Warning "$msg Discovery results may be incomplete."
 }
 $org = (Graph GET 'https://graph.microsoft.com/v1.0/organization').value[0]
 $initialDomain = ($org.verifiedDomains | Where-Object { $_.isInitial }).name
