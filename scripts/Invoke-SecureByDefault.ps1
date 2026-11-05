@@ -46,7 +46,7 @@ $banner = @'
 '@
 $banner -split "`n" | ForEach-Object { Write-Host $_ -ForegroundColor Cyan }
 
-Set-StrictMode -Version Latest
+Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 $script:Results = [System.Collections.Generic.List[object]]::new()
 $script:Reference = Get-Content (Join-Path $PSScriptRoot '..\config\reference-state.json') -Raw | ConvertFrom-Json
@@ -187,7 +187,8 @@ function Step-UserSettings {
     Compare-Setting 'UserSettings' 'Guest user access (guestUserRoleId)' $p.guestUserRoleId $ref.guestUserRoleId { Graph PATCH $uri @{ guestUserRoleId = $ref.guestUserRoleId } } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AllowlistPolicyBlade'
     try {
         $beta = Graph GET 'https://graph.microsoft.com/beta/policies/authorizationPolicy'
-        $prop = $beta.defaultUserRolePermissions.Keys | Where-Object { $_ -match 'agentIdentityBlueprint' } | Select-Object -First 1
+        if ($beta.value) { $beta = @($beta.value)[0] }
+        $prop = @($beta.defaultUserRolePermissions.Keys) | Where-Object { $_ -match 'agentIdentityBlueprint' } | Select-Object -First 1
         if ($prop) {
             Compare-Setting 'UserSettings' 'Users can register agent identity blueprints' $beta.defaultUserRolePermissions[$prop] $ref.usersCanRegisterAgentBlueprints {
                 Graph PATCH 'https://graph.microsoft.com/beta/policies/authorizationPolicy' @{ defaultUserRolePermissions = @{ $prop = $ref.usersCanRegisterAgentBlueprints } } } $link
@@ -329,10 +330,10 @@ function Step-SharePoint {
     $link = "$SharePointAdminUrl/_layouts/15/online/AdminHome.aspx#/sharing"
     Compare-Setting 'SharePoint' 'External sharing level (sharingCapability)' $t.sharingCapability $ref.sharingCapability {
         Graph PATCH $uri @{ sharingCapability = ($ref.sharingCapability.Substring(0, 1).ToLower() + $ref.sharingCapability.Substring(1)) } | Out-Null } $link
-    Compare-Setting 'SharePoint' 'Guests must sign in with the invited account' $t.isRequireAcceptingUserToMatchInvitedUserEnabled 'True' {
-        Graph PATCH $uri @{ isRequireAcceptingUserToMatchInvitedUserEnabled = $true } | Out-Null } $link
-    Compare-Setting 'SharePoint' 'Legacy authentication protocols enabled' $t.isLegacyAuthProtocolsEnabled 'False' {
-        Graph PATCH $uri @{ isLegacyAuthProtocolsEnabled = $false } | Out-Null } $link
+    if ($null -ne $t.isRequireAcceptingUserToMatchInvitedUserEnabled) { Compare-Setting 'SharePoint' 'Guests must sign in with the invited account' $t.isRequireAcceptingUserToMatchInvitedUserEnabled 'True' {
+        Graph PATCH $uri @{ isRequireAcceptingUserToMatchInvitedUserEnabled = $true } | Out-Null } $link }
+    if ($null -ne $t.isLegacyAuthProtocolsEnabled) { Compare-Setting 'SharePoint' 'Legacy authentication protocols enabled' $t.isLegacyAuthProtocolsEnabled 'False' {
+        Graph PATCH $uri @{ isLegacyAuthProtocolsEnabled = $false } | Out-Null } $link }
     Add-Result 'SharePoint' 'Default sharing link type / anonymous link and guest expiry' 'not exposed by Microsoft Graph' 'Direct, expiry 30 days' Manual $link
 }
 
