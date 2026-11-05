@@ -24,9 +24,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet('Discover', 'Enforce')][string]$Mode = 'Discover',
-    [ValidateSet('AuditLog', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
+    [ValidateSet('AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance')]
-    [string[]]$Steps = @('AuditLog', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
+    [string[]]$Steps = @('AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
@@ -52,19 +52,24 @@ $script:Results = [System.Collections.Generic.List[object]]::new()
 $script:Reference = Get-Content (Join-Path $PSScriptRoot '..\config\reference-state.json') -Raw | ConvertFrom-Json
 
 #region helpers
+$GuideBase = 'https://coc-ms.github.io/ALSO-Microsoft-Security-Fundamentals-and-Copilot-Readiness/'
+$BreakGlassPdf = $GuideBase + 'downloads/break-glass-account-best-practices.pdf'
+
 function Add-Result {
-    param($Step, $Setting, $Current, $Expected, [ValidateSet('Compliant', 'Drift', 'Fixed', 'Manual', 'Info', 'Error', 'Skipped')]$Status, $Link)
-    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link })
+    param($Step, $Setting, $Current, $Expected, [ValidateSet('Compliant', 'Drift', 'Fixed', 'Manual', 'Info', 'Error', 'Skipped')]$Status, $Link, $Detail, $Doc, $DocText)
+    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Doc = $Doc; DocText = $(if ($DocText) { $DocText } else { 'Read the ALSO guide' }) })
     $color = @{ Compliant = 'Green'; Fixed = 'Green'; Drift = 'Yellow'; Manual = 'Cyan'; Info = 'Gray'; Error = 'Red'; Skipped = 'DarkGray' }[$Status]
     $msg = switch ($Status) {
         'Compliant' { "${Setting}: $Current" }
         'Fixed'     { "${Setting}: changed from '$Current' to '$Expected'" }
         'Drift'     { "${Setting}: currently '$Current', should be '$Expected'" }
         'Error'     { "${Setting}: could not change from '$Current' to '$Expected'" }
+        'Skipped'   { "${Setting}: skipped - $Current" }
         default     { "${Setting}: $Current (reference: $Expected)" }
     }
     Write-Host ("  [{0,-9}] {1}" -f $Status, $msg) -ForegroundColor $color
     if ($Link -and $Status -in 'Manual', 'Drift') { Write-Host "              -> $Link" -ForegroundColor DarkCyan }
+    if ($Doc -and $Status -in 'Manual', 'Drift', 'Skipped') { Write-Host "              Guide: $Doc" -ForegroundColor DarkCyan }
 }
 
 function Write-Step([string]$Title, [string]$Why) {
@@ -80,13 +85,13 @@ function Confirm-Change([string]$Action) {
 }
 
 function Compare-Setting {
-    param($Step, $Setting, $Current, $Expected, [scriptblock]$Fix, $Link)
-    if ("$Current" -eq "$Expected") { Add-Result $Step $Setting $Current $Expected Compliant $Link; return }
+    param($Step, $Setting, $Current, $Expected, [scriptblock]$Fix, $Link, $Detail, $Doc, $DocText)
+    if ("$Current" -eq "$Expected") { Add-Result $Step $Setting $Current $Expected Compliant $Link $Detail $Doc $DocText; return }
     if ($Fix -and (Confirm-Change "$Setting - change from '$Current' to '$Expected'")) {
-        try { & $Fix; Add-Result $Step $Setting $Current $Expected Fixed $Link }
-        catch { Add-Result $Step $Setting $Current $Expected Error $Link; Write-Warning $_.Exception.Message }
+        try { & $Fix; Add-Result $Step $Setting $Current $Expected Fixed $Link $Detail $Doc $DocText }
+        catch { Add-Result $Step $Setting $Current $Expected Error $Link $Detail $Doc $DocText; Write-Warning $_.Exception.Message }
     }
-    else { Add-Result $Step $Setting $Current $Expected Drift $Link }
+    else { Add-Result $Step $Setting $Current $Expected Drift $Link $Detail $Doc $DocText }
 }
 
 function Invoke-Safe([string]$Step, [scriptblock]$Body) {
@@ -122,7 +127,7 @@ $graphScopes = if ($Mode -eq 'Enforce') {
     'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'User.ReadWrite.All', 'Group.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
     'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
-    'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All'
+    'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
@@ -240,6 +245,29 @@ $script:GuestRoles = @{
     '2af84b1e-32c8-42b7-82bc-daa82404023b' = 'Restricted access to properties and memberships of directory objects (most restrictive)'
 }
 function Get-GuestRoleName($id) { if ($script:GuestRoles.ContainsKey("$id")) { $script:GuestRoles["$id"] } else { "Unknown role ($id)" } }
+
+function Step-SecurityDefaults {
+    Write-Step 'Security defaults' 'Microsoft free baseline MFA. Should be replaced by ALSO Conditional Access baseline for full control.'
+    $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/EntraProperties.ReactView'
+    $doc = $GuideBase + '#identity-policies'
+    $uri = 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy'
+    $sd = Graph GET $uri
+    $ca = @((Graph GET 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$select=id').value)
+    $why = 'Security defaults gives every user baseline MFA but cannot be customised (no break-glass exclusions, no authentication strengths, no device or location rules). Conditional Access and security defaults cannot be used together. Recommended: deploy ALSO''s Conditional Access baseline (step 10, Identity and access, in the ALSO guide), then turn security defaults OFF. If no Conditional Access policies exist, keep security defaults ON so the tenant is never left without MFA.'
+    if ($sd.isEnabled -eq $true) {
+        Add-Result 'SecurityDefaults' 'Security defaults' 'On' 'On until ALSO Conditional Access baseline is deployed, then Off' Manual $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
+    }
+    elseif ($ca.Count -gt 0) {
+        Add-Result 'SecurityDefaults' 'Security defaults' "Off - $($ca.Count) Conditional Access policies in use" 'Off with Conditional Access in use' Compliant $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
+    }
+    else {
+        Compare-Setting 'SecurityDefaults' 'Security defaults' 'Off (and no Conditional Access policies exist)' 'On until ALSO Conditional Access baseline is deployed' {
+            Graph PATCH $uri @{ isEnabled = $true } | Out-Null
+            Write-Host '   Security defaults is now ON. When you deploy the ALSO Conditional Access baseline (step 10 in the ALSO guide), turn security defaults OFF again.' -ForegroundColor Yellow
+            Write-Host "   Guide: $doc" -ForegroundColor DarkCyan
+        } $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
+    }
+}
 
 function Step-UserSettings {
     Write-Step 'Entra user settings & external collaboration' 'Default user permissions and guest restrictions.'
@@ -369,10 +397,10 @@ function Step-BreakGlass {
     $bgDoc = 'https://learn.microsoft.com/entra/identity/role-based-access-control/security-emergency-access'
     $adminLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits'
     $caLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
-    Add-Result 'BreakGlass' "Add 1-2 trusted admins as administrators of the '$BreakGlassAuName' administrative unit" 'Cannot be checked automatically' "Only these trusted admins can manage the group '$BreakGlassGroupName' and the two break-glass accounts" Manual $adminLink
-    Add-Result 'BreakGlass' 'Set up monitoring and an alert on every sign-in of the break-glass accounts' 'Cannot be checked automatically' 'Alert goes to the security team on any sign-in' Manual $bgDoc
-    Add-Result 'BreakGlass' 'Exclude both break-glass accounts (or the group) from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every Conditional Access policy' Manual $caLink
-    Add-Result 'BreakGlass' 'Register at least one FIDO2 security key on EACH break-glass account' 'Cannot be checked automatically' 'Each account has its own registered security key' Manual 'https://mysignins.microsoft.com/security-info'
+    Add-Result 'BreakGlass' "Add 1-2 trusted admins as administrators of the '$BreakGlassAuName' administrative unit" 'Cannot be checked automatically' "Only these trusted admins can manage the group '$BreakGlassGroupName' and the two break-glass accounts" Manual $adminLink 'The restricted management administrative unit protects the group and both accounts from being changed by regular admins. Only the trusted admins you add as administrators of the unit (Entra ID > Roles and administrators > Administrative units) can reset passwords, change membership or delete them. Add 1-2 trusted admins only.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+    Add-Result 'BreakGlass' 'Set up monitoring and an alert on every sign-in of the break-glass accounts' 'Cannot be checked automatically' 'Alert goes to the security team on any sign-in' Manual $bgDoc 'Any sign-in with a break-glass account means something went wrong or an attack is under way. Send sign-in logs to Log Analytics / Sentinel and create an alert rule (or a Defender XDR custom detection) that notifies the security team immediately on every sign-in of either account. Test the alert regularly.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+    Add-Result 'BreakGlass' 'Exclude both break-glass accounts (or the group) from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every Conditional Access policy' Manual $caLink "If a Conditional Access policy breaks sign-in (or MFA is unavailable) the break-glass accounts must still be able to get in. Exclude the group '$BreakGlassGroupName' from every Conditional Access policy, including new ones. Their own protection comes from long random passwords, security keys and monitoring." $BreakGlassPdf 'Break-glass best practices (PDF)'
+    Add-Result 'BreakGlass' 'Register at least one FIDO2 security key on EACH break-glass account' 'Cannot be checked automatically' 'Each account has its own registered security key' Manual 'https://mysignins.microsoft.com/security-info' 'The accounts are excluded from Conditional Access, so they need their own phishing-resistant sign-in. Sign in once to each account and register at least one FIDO2 security key per account at My Security Info. Store the keys in separate secure physical locations (for example two safes) and document who may access them.' $BreakGlassPdf 'Break-glass best practices (PDF)'
     if ($Mode -eq 'Enforce') {
         Write-Host ''
         Write-Host '   NEXT STEPS for the break-glass accounts (do these now):' -ForegroundColor Yellow
@@ -380,7 +408,7 @@ function Step-BreakGlass {
         Write-Host '   2. Set up monitoring and a sign-in alert on both accounts.' -ForegroundColor Yellow
         Write-Host '   3. Exclude both accounts from ALL Conditional Access policies.' -ForegroundColor Yellow
         Write-Host '   4. Register a security key (FIDO2) on each account.' -ForegroundColor Yellow
-        Write-Host "   Guidance: $bgDoc" -ForegroundColor DarkCyan
+        Write-Host "   More info (PDF): $BreakGlassPdf" -ForegroundColor DarkCyan
     }
 }
 
@@ -459,16 +487,22 @@ function Step-Laps {
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DeviceSettings'
     $uri = 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
     $dr = Graph GET $uri
-    Compare-Setting 'Laps' 'Enable Microsoft Entra Local Administrator Password Solution (LAPS)' (YN $dr.localAdminPassword.isEnabled) 'Yes' { Graph PATCH $uri @{ localAdminPassword = @{ isEnabled = $true } } } $link
+    $lapsDoc = $GuideBase + '#local-admin'
+    $lapsText = 'ALSO guide: LAPS via policy templates (Endpoints, step 4)'
+    $lapsWhy = 'Entra LAPS lets devices store a unique, rotating local administrator password in Entra ID, so one stolen local password cannot be reused on other devices. This switch only allows the feature. To actually deploy it, create the Windows LAPS policy in Intune (Endpoint security > Account protection) using ALSO''s policy templates and test password recovery - see step 4 under Endpoint management and protection in the ALSO guide.'
+    Compare-Setting 'Laps' 'Enable Microsoft Entra Local Administrator Password Solution (LAPS)' (YN $dr.localAdminPassword.isEnabled) 'Yes' { Graph PATCH $uri @{ localAdminPassword = @{ isEnabled = $true } } } $link $lapsWhy $lapsDoc $lapsText
+    $regDoc = $GuideBase + '#device-registration'
+    $mfaCur = if ("$($dr.multiFactorAuthConfiguration)" -eq 'required') { 'Yes' } else { 'No' }
+    Compare-Setting 'Laps' 'Require multifactor authentication to register or join devices (legacy device setting)' $mfaCur 'No' { Graph PATCH $uri @{ multiFactorAuthConfiguration = 'notRequired' } } $link 'This old per-tenant switch is replaced by a Conditional Access policy (user action: Register or join devices) that requires MFA. The legacy switch and the Conditional Access policy conflict, so the reference state is No here and MFA is enforced through Conditional Access instead. Deploy that policy from ALSO''s templates - see step 1 under Endpoint management and protection in the ALSO guide.' $regDoc 'ALSO guide: MFA when registering devices (Endpoints, step 1)'
     Compare-Setting 'Laps' 'Global administrators become local admin on Entra-joined devices' (YN $dr.azureADJoin.localAdmins.enableGlobalAdmins) 'No' {
-        Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ enableGlobalAdmins = $false } } } } $link
+        Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ enableGlobalAdmins = $false } } } } $link 'Global administrators should not automatically be local admins on every Entra-joined device. This limits the damage if a global admin account is compromised. Use LAPS for controlled local admin access instead.' $lapsDoc $lapsText
     $ru = @{ '#microsoft.graph.noDeviceRegistrationMembership' = 'None (registering user is not local admin)'
         '#microsoft.graph.allDeviceRegistrationMembership' = 'All registering users'
         '#microsoft.graph.enumeratedDeviceRegistrationMembership' = 'Selected users and groups' }
     $curType = "$($dr.azureADJoin.localAdmins.registeringUsers.'@odata.type')"
     $curRu = if ($ru.ContainsKey($curType)) { $ru[$curType] } else { "Unknown ($curType)" }
     Compare-Setting 'Laps' 'Registering user is added as local administrator on join' $curRu $ru['#microsoft.graph.noDeviceRegistrationMembership'] {
-        Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ registeringUsers = @{ '@odata.type' = '#microsoft.graph.noDeviceRegistrationMembership' } } } } } $link
+        Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ registeringUsers = @{ '@odata.type' = '#microsoft.graph.noDeviceRegistrationMembership' } } } } } $link 'The user who joins a device should not become its local administrator. Set to None so users run as standard users.' $lapsDoc $lapsText
 }
 
 function Step-MdoPresets {
@@ -519,10 +553,28 @@ function Step-DefenderEndpoint {
 function Step-DefenderGuidance {
     Write-Step 'Defender XDR guidance' 'Settings Microsoft offers only in the portal (no public API to read or set them).'
     $na = 'Cannot be read automatically (no Microsoft API)'
-    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications'
-    Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' $na 'Ready' Manual 'https://security.microsoft.com/securitysettings/identities'
-    Add-Result 'DefenderGuidance' 'Defender for Cloud Apps and Defender for Endpoint integration' $na 'Enabled' Manual 'https://security.microsoft.com/cloudapps/settings?tabid=mdatp'
-    Add-Result 'DefenderGuidance' 'App governance / OAuth app policies' $na 'Turned on' Manual 'https://security.microsoft.com/cloudapps/app-governance'
+    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications' 'Make sure the right people (security team or your partner) receive Defender incident emails so high-severity incidents are not missed.'
+    $plans = @()
+    try { $plans = @((Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value | Where-Object { $_.capabilityStatus -eq 'Enabled' } | ForEach-Object { $_.servicePlans } | ForEach-Object { $_.servicePlanName }) } catch { Write-Warning "Could not read licenses: $($_.Exception.Message)" }
+    $need = 'requires Microsoft 365 E5 (or E5 Security), the Defender or Purview suite, or a standalone license'
+    $hasMdi = [bool]($plans | Where-Object { $_ -match '^ATA$|DEFENDER_FOR_IDENTITY|MDI' })
+    $hasMda = [bool]($plans | Where-Object { $_ -match 'ADALLOM_S_(STANDALONE|O365|DISCOVERY)|MCAS|CLOUD_APP_SECURITY|DEFENDER_FOR_CLOUD_APPS' })
+    $mdiLink = 'https://security.microsoft.com/securitysettings/identities'
+    $mdiText = 'ALSO guide: Defender for Identity (Extend identity, step 1)'
+    $mcaText = 'ALSO guide: Defender for Cloud Apps (Discover and protect cloud apps, steps 1-3)'
+    $agText = 'ALSO guide: App governance (Discover and protect cloud apps, steps 1-3)'
+    if ($hasMdi) {
+        Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' $na 'Ready' Manual $mdiLink 'Defender for Identity watches domain controllers and Entra for identity attacks. Deploy sensors on domain controllers and check the health status in the Defender portal.' ($GuideBase + '#defender-identity') $mdiText
+    }
+    else { Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' "No license found - Defender for Identity $need" 'Skipped (not licensed)' Skipped $mdiLink 'Defender for Identity is not licensed in this tenant, so this step is skipped.' ($GuideBase + '#defender-identity') $mdiText }
+    if ($hasMda) {
+        Add-Result 'DefenderGuidance' 'Defender for Cloud Apps and Defender for Endpoint integration' $na 'Enabled' Manual 'https://security.microsoft.com/cloudapps/settings?tabid=mdatp' 'Integrating Defender for Cloud Apps with Defender for Endpoint lets you discover and block unsanctioned cloud apps from managed devices.' ($GuideBase + '#cloud-apps') $mcaText
+        Add-Result 'DefenderGuidance' 'App governance / OAuth app policies' $na 'Turned on' Manual 'https://security.microsoft.com/cloudapps/app-governance' 'App governance detects risky or over-privileged OAuth apps and lets you create policies to alert on or disable them.' ($GuideBase + '#app-governance') $agText
+    }
+    else {
+        Add-Result 'DefenderGuidance' 'Defender for Cloud Apps and Defender for Endpoint integration' "No license found - Defender for Cloud Apps $need" 'Skipped (not licensed)' Skipped 'https://security.microsoft.com/cloudapps/settings?tabid=mdatp' 'Defender for Cloud Apps is not licensed in this tenant, so this step is skipped.' ($GuideBase + '#cloud-apps') $mcaText
+        Add-Result 'DefenderGuidance' 'App governance / OAuth app policies' "No license found - app governance $need (Defender for Cloud Apps)" 'Skipped (not licensed)' Skipped 'https://security.microsoft.com/cloudapps/app-governance' 'App governance is an add-on to Defender for Cloud Apps and is not available without it, so this step is skipped.' ($GuideBase + '#app-governance') $agText
+    }
 }
 #endregion
 
@@ -536,14 +588,14 @@ $html = Join-Path $OutputPath "sbd-$Mode-$stamp.html"
 $script:Results | ConvertTo-Json -Depth 4 | Set-Content $json -Encoding UTF8
 $enc = { param($s) [Net.WebUtility]::HtmlEncode("$s") }
 $cats = [ordered]@{
-    AuditLog = 'Auditing & compliance'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
+    AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
 $total = @($script:Results).Count
-$cards = foreach ($st in 'Compliant', 'Fixed', 'Drift', 'Manual', 'Error', 'Info') {
+$cards = foreach ($st in 'Compliant', 'Fixed', 'Drift', 'Manual', 'Skipped', 'Error', 'Info') {
     $n = @($script:Results | Where-Object Status -eq $st).Count
     "<div class='card $st'><b>$n</b><span>$($label[$st])</span></div>"
 }
@@ -554,7 +606,8 @@ $sections = foreach ($cat in ($cats.Values | Select-Object -Unique)) {
     $badge = if ($bad) { "<span class='pill Drift'>$bad to fix</span>" } else { "<span class='pill Compliant'>all good</span>" }
     $rows = foreach ($r in $items) {
         $l = if ($r.Link) { "<a href='$(& $enc $r.Link)' target='_blank'>Open in portal &rarr;</a>" } else { '' }
-        "<tr><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b></td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
+        $d = if ($r.Detail) { "<div class='why'>$(& $enc $r.Detail)$(if ($r.Doc) { " <a href='$(& $enc $r.Doc)' target='_blank'>$(& $enc $r.DocText) &rarr;</a>" })</div>" } else { '' }
+        "<tr><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b>$d</td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
     }
     "<section><h2>$(& $enc $cat) $badge</h2><table><tr><th>State</th><th>Setting</th><th>Current value</th><th>Expected</th><th></th></tr>$($rows -join '')</table></section>"
 }
@@ -571,7 +624,7 @@ section{background:#fff;border:1px solid #dde3ea;border-radius:10px;margin-botto
 h2{font-size:1.15rem;display:flex;align-items:center;gap:10px}
 table{border-collapse:collapse;width:100%}th{text-align:left;font-size:.78rem;text-transform:uppercase;color:#5b6b7c;padding:6px 8px;border-bottom:2px solid #e6ebf0}
 td{padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:.9rem;word-break:break-word}td.st{white-space:nowrap}
-a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
+.why{margin-top:6px;font-size:.82rem;font-weight:400;color:#4a5a6a;line-height:1.45}a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
 .next{background:#fff;border:1px solid #dde3ea;border-left:5px solid #00757d;border-radius:10px;padding:8px 24px 22px;margin:28px 0}.next p{color:#5b6b7c;max-width:760px}.btn{display:inline-block;background:#0b5cab;color:#fff!important;padding:10px 20px;border-radius:8px;font-weight:600}.btn:hover{text-decoration:none;background:#094a8c}
 .pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.78rem;font-weight:600;color:#fff;background:#9aa7b4}
 .pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
