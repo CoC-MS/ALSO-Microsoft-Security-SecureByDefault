@@ -500,12 +500,15 @@ function Step-Consent {
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings'
     $w = Graph GET 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
     Compare-Setting 'Consent' 'Admin consent request workflow enabled' $w.isEnabled 'True' {
-        $rev = @($AdminConsentReviewerIds)
-        if (-not $rev.Count) { $rev = @($script:MeId); Write-Host "   No reviewers were given, so you ($($script:MeUpn)) are added as the reviewer. Add more reviewers later in Entra ID." -ForegroundColor DarkGray }
-        $AdminConsentReviewerIds = $rev
+        $revIds = @($AdminConsentReviewerIds | Where-Object { $_ })
+        if (-not $script:MeId) { $meNow = Graph GET 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'; $script:MeId = $meNow.id; $script:MeUpn = $meNow.userPrincipalName }
+        $meListed = @($revIds | Where-Object { $_ -eq $script:MeId }).Count -gt 0
+        if (-not $meListed -and $script:MeId -and (Confirm-Change "Add you ($($script:MeUpn)) as a reviewer of admin consent requests? Reviewers receive and approve the requests.")) { $revIds += $script:MeId }
+        if (-not $revIds.Count) { throw 'The workflow needs at least one reviewer. Run again and add yourself as reviewer, or pass -AdminConsentReviewerIds.' }
+        $reviewerList = @(foreach ($rid in $revIds) { @{ query = "/users/$rid"; queryType = 'MicrosoftGraph' } })
         Graph PUT 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy' @{
             isEnabled = $true; notifyReviewers = $true; remindersEnabled = $true; requestDurationInDays = $ref.requestDurationInDays
-            reviewers = @($AdminConsentReviewerIds | ForEach-Object { @{ query = "/users/$_"; queryType = 'MicrosoftGraph' } })
+            reviewers = $reviewerList
         }
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/AdminConsentSettings'
 }
@@ -1910,24 +1913,36 @@ function Step-WipePurview {
     } 'https://purview.microsoft.com/datalifecyclemanagement/policies' 'A retention policy with preservation lock cannot be removed by anyone.'
 }
 
-function Step-WipeBreakGlass {
-    Write-Step 'Remove emergency access accounts' 'Removes the two emergency access accounts, their security group and the restricted management unit that this script created.'
+function Step-WipeRmau {
+    Write-Step 'Remove the restricted management unit' 'Removed first, because groups inside it cannot be deleted by anyone who is not an administrator of the unit.'
+    Set-Group 'Restricted management administrative unit'
+    $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits'
+    $q = [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'")
+    $items = @(foreach ($a in @((Graph GET ('https://graph.microsoft.com/v1.0/directory/administrativeUnits?$filter=' + $q)).value)) { [pscustomobject]@{ Name = "Restricted management unit: $($a.displayName)"; Uri = "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($a.id)" } })
+    Remove-Items 'BreakGlass' 'restricted management unit' $items { param($x) $x.Name } { param($x) Graph DELETE $x.Uri | Out-Null } $link 'Removing the unit first frees the Conditional Access groups and the emergency access group, so they can be deleted in the next steps.'
+}
+
+function Step-WipeBreakGlass {    Write-Step 'Remove emergency access accounts' 'Removes the two emergency access accounts, their security group and the restricted management unit that this script created.'
     Set-Group 'Emergency access accounts, group and restricted management unit'
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/AllUsers'
     Write-Host '   WARNING: make sure another Global Administrator can sign in before you remove the emergency access accounts.' -ForegroundColor Yellow
     $items = @()
     $q = [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'")
-    foreach ($a in @((Graph GET ('https://graph.microsoft.com/v1.0/directory/administrativeUnits?$filter=' + $q)).value)) { $items += [pscustomobject]@{ Name = "Restricted management unit: $($a.displayName)"; Uri = "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($a.id)"; Id = $a.id; User = $false } }
     $g = Find-GroupByName $BreakGlassGroupName
     if ($g) { $items += [pscustomobject]@{ Name = "Security group: $($g.displayName)"; Uri = "https://graph.microsoft.com/v1.0/groups/$($g.id)"; Id = $g.id; User = $false } }
+    $seen = @{}
+    $add = { param($u) if ($u.id -and -not $seen[$u.id]) { $seen[$u.id] = 1; $script:wipeItems += [pscustomobject]@{ Name = "Account: $($u.userPrincipalName)"; Uri = "https://graph.microsoft.com/v1.0/users/$($u.id)"; Id = $u.id; User = $true } } }
+    $script:wipeItems = $items
     foreach ($n in $script:Reference.breakGlass.accountNames) {
-        try { $u = Graph GET "https://graph.microsoft.com/v1.0/users/$("$n@$initialDomain")?`$select=id,userPrincipalName"; if ($u.id) { $items += [pscustomobject]@{ Name = "Account: $($u.userPrincipalName)"; Uri = "https://graph.microsoft.com/v1.0/users/$($u.id)"; Id = $u.id; User = $true } } } catch { }
+        try { & $add (Graph GET "https://graph.microsoft.com/v1.0/users/$("$n@$initialDomain")?`$select=id,userPrincipalName") } catch { }
     }
+    if ($g) { try { foreach ($m in @(Get-AllPages "https://graph.microsoft.com/v1.0/groups/$($g.id)/members/microsoft.graph.user?`$select=id,userPrincipalName")) { & $add $m } } catch { } }
+    $items = @($script:wipeItems)
     Remove-Items 'BreakGlass' 'emergency access accounts, group and restricted management unit' $items { param($x) $x.Name } {
         param($x)
         Graph DELETE $x.Uri | Out-Null
         if ($x.User) { try { Graph DELETE "https://graph.microsoft.com/v1.0/directory/deletedItems/$($x.Id)" | Out-Null } catch { } }
-    } $link 'Accounts are deleted permanently so the same names can be created again. The unit is removed first, then the group, then the accounts.'
+    } $link 'Accounts are deleted permanently so the same names can be created again. The group is removed first, then the accounts. Accounts are found by name and as members of the group, so renamed accounts are included.'
 }
 
 function Invoke-Wipe {
@@ -1946,6 +1961,7 @@ function Invoke-Wipe {
         }
     }
     catch { Write-Host "  Could not assign you to the restricted management unit: $($_.Exception.Message)" -ForegroundColor Yellow }
+    if ('BreakGlass' -in $Steps) { Invoke-Safe 'BreakGlass' { Step-WipeRmau } }
     foreach ($s in 'ConditionalAccess', 'IntunePolicies', 'Purview', 'BreakGlass') {
         if ($s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
