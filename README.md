@@ -30,5 +30,6 @@ Reference values live in `config/reference-state.json`; review them for your org
 - Windows LAPS policy must still be deployed via Intune.
 
 ## GitHub Pages
-Site in `docs/`, deployed by `.github/workflows/pages.yml` (Settings > Pages > Source: GitHub Actions). `docs/also-logo.png` is a the ALSO logo, copied from CoC-MS/ALSO-security-policy-templates-navigator.
+Site in `docs/`, deployed by `.github/workflows/pages.yml` (Settings > Pages > Source: GitHub Actions). `docs/also-logo.png` is the ALSO logo, copied from CoC-MS/ALSO-security-policy-templates-navigator.
+
 
