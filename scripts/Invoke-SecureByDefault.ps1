@@ -140,12 +140,55 @@ function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
 
 Show-SignIn 'Microsoft Graph (Entra ID, Intune, tenant settings)' 'Reads and, in Enforce mode, changes tenant-wide settings.' ($graphScopes -join ', ')
 Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
-$optParams = (Get-Command Set-MgGraphOption).Parameters.Keys
-if ($optParams -contains 'DisableLoginByWAM') { Set-MgGraphOption -DisableLoginByWAM $true }
-elseif ($optParams -contains 'EnableLoginByWAM') { Set-MgGraphOption -EnableLoginByWAM $false }
-else { Write-Warning 'This Microsoft.Graph.Authentication version cannot disable the Windows account dialog. Run: Update-Module Microsoft.Graph.Authentication' }
-try { Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop }
-catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message). Close any stuck sign-in windows and run the script again." }
+function Get-BrowserToken([string[]]$Scopes) {
+    $clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e'   # Microsoft Graph Command Line Tools
+    $port = Get-Random -Minimum 49200 -Maximum 65000
+    $redirect = "http://localhost:$port"
+    $b64 = { param([byte[]]$b) [Convert]::ToBase64String($b).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    $rand = { param($n) $x = [byte[]]::new($n); $rng.GetBytes($x); & $b64 $x }
+    $verifier = & $rand 48
+    $challenge = & $b64 ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::ASCII.GetBytes($verifier)))
+    $state = & $rand 16
+    $scope = ($Scopes | ForEach-Object { "https://graph.microsoft.com/$_" }) -join ' '
+    $auth = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?client_id=$clientId&response_type=code&response_mode=query" +
+        "&redirect_uri=$([uri]::EscapeDataString($redirect))&scope=$([uri]::EscapeDataString($scope))&state=$state&code_challenge=$challenge&code_challenge_method=S256&prompt=select_account"
+    $listeners = @()
+    foreach ($ip in [Net.IPAddress]::Loopback, [Net.IPAddress]::IPv6Loopback) {
+        try { $l = [Net.Sockets.TcpListener]::new($ip, $port); $l.Start(); $listeners += $l } catch { }
+    }
+    if (-not $listeners) { throw "Could not listen on localhost port $port for the sign-in response." }
+    try {
+        Start-Process $auth
+        $deadline = (Get-Date).AddMinutes(5); $client = $null
+        while (-not $client -and (Get-Date) -lt $deadline) {
+            foreach ($l in $listeners) { if ($l.Pending()) { $client = $l.AcceptTcpClient(); break } }
+            if (-not $client) { Start-Sleep -Milliseconds 200 }
+        }
+        if (-not $client) { throw 'Timed out waiting for browser sign-in (5 minutes).' }
+        $stream = $client.GetStream(); $buf = [byte[]]::new(8192); $n = $stream.Read($buf, 0, $buf.Length)
+        $line = ([Text.Encoding]::ASCII.GetString($buf, 0, $n) -split "`r?`n")[0]
+        $q = [Web.HttpUtility]::ParseQueryString(($line -split ' ')[1].Split('?', 2)[1])
+        $ok = [bool]$q['code']
+        $msg = if ($ok) { 'Signed in. You can close this tab and return to PowerShell.' } else { 'Sign-in failed. Return to PowerShell for details.' }
+        $body = [Text.Encoding]::UTF8.GetBytes("<html><body style='font-family:Segoe UI;margin:3em'><h2>ALSO Secure by Default</h2><p>$msg</p></body></html>")
+        $hdr = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
+        $stream.Write($hdr, 0, $hdr.Length); $stream.Write($body, 0, $body.Length); $stream.Flush(); $client.Close()
+        if ($q['error']) { throw "$($q['error']): $($q['error_description'])" }
+        if ($q['state'] -ne $state) { throw 'Sign-in response state mismatch.' }
+    }
+    finally { foreach ($l in $listeners) { $l.Stop() } }
+    $tok = Invoke-RestMethod -Method Post -Uri 'https://login.microsoftonline.com/organizations/oauth2/v2.0/token' -Body @{
+        client_id = $clientId; grant_type = 'authorization_code'; code = $q['code']; redirect_uri = $redirect; code_verifier = $verifier; scope = $scope }
+    $tok.access_token
+}
+
+Write-Host '  Opening your default browser for sign-in...' -ForegroundColor DarkGray
+try {
+    $token = Get-BrowserToken $graphScopes
+    Connect-MgGraph -AccessToken (ConvertTo-SecureString $token -AsPlainText -Force) -NoWelcome -ErrorAction Stop
+}
+catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message)" }
 Write-Host '  Signed in to Microsoft Graph.' -ForegroundColor Green
 $gaRole = '62e90394-69f5-4237-9190-012177145e10'
 $myRoles = (Graph GET 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId').value.roleTemplateId
