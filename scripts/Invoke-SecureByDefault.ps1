@@ -436,6 +436,7 @@ $rows = $script:Results | ForEach-Object {
 Write-Host "`nSummary:" -ForegroundColor Cyan
 $script:Results | Group-Object Status | ForEach-Object { Write-Host ("  {0,-10} {1}" -f $_.Name, $_.Count) }
 Write-Host "Reports: $json`n         $html"
+try { Invoke-Item $html } catch { Write-Host "Open the HTML report manually: $html" -ForegroundColor Yellow }
 if ($Mode -eq 'Discover') {
     $driftSteps = @($script:Results | Where-Object Status -eq 'Drift' | Select-Object -ExpandProperty Step -Unique)
     if ($driftSteps) {
