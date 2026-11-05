@@ -230,29 +230,34 @@ if ($needsExo) {
 #endregion
 
 #region steps
-function Step-Licensing {
-    Write-Step 'License check' 'Finds which Microsoft security products this tenant is licensed for, so you know which recommendations apply today.'
-    $link = 'https://admin.microsoft.com/#/subscriptions'
+function Get-LicenseTier {
+    if ($script:LicenseInfo) { return $script:LicenseInfo }
     $skus = @((Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value | Where-Object { $_.capabilityStatus -eq 'Enabled' })
+    $parts = @($skus | ForEach-Object { $_.skuPartNumber } | Sort-Object -Unique)
     $plans = @($skus | ForEach-Object { $_.servicePlans } | Where-Object { $_.provisioningStatus -ne 'Disabled' } | ForEach-Object { $_.servicePlanName })
-    $names = ($skus | ForEach-Object { $_.skuPartNumber } | Sort-Object -Unique) -join ', '
-    Add-Result 'Licensing' 'Active subscriptions in this tenant' $(if ($names) { $names } else { 'None found' }) 'Used to decide which recommendations apply' Info $link 'These are the license SKUs found in the tenant. The checks below are derived from the service plans inside them.'
-    $products = @(
-        @('Microsoft Entra ID P1 (Conditional Access)', 'AAD_PREMIUM$', 'Conditional Access, restricted management administrative units and authentication strengths are available.', '#identity-policies'),
-        @('Microsoft Entra ID P2 (ID Protection, PIM)', 'AAD_PREMIUM_P2', 'Risk-based Conditional Access, Identity Protection and Privileged Identity Management are available.', '#identity-policies'),
-        @('Microsoft Intune', 'INTUNE_A$|INTUNE_SMBIZ', 'Device enrollment, compliance, LAPS and Defender policies via Intune are available.', '#endpoints'),
-        @('Defender for Business / Endpoint', 'WINDEFATP|MDE_SMB|MDE_LITE|DEFENDER_ENDPOINT_P1', 'Defender for Endpoint onboarding and security settings are available.', '#defender-onboarding'),
-        @('Defender for Office 365', 'ATP_ENTERPRISE|EOP_ENTERPRISE_PREMIUM|THREAT_INTELLIGENCE', 'Safe Links, Safe Attachments and preset security policies for email are available.', '#office-protection'),
-        @('Defender for Identity', '^ATA$|DEFENDER_FOR_IDENTITY', 'Identity threat detection on domain controllers is available (extend identity protection).', '#defender-identity'),
-        @('Defender for Cloud Apps and app governance', 'ADALLOM_S_(STANDALONE|O365|DISCOVERY)|MCAS|DEFENDER_FOR_CLOUD_APPS', 'Cloud app discovery, risky app blocking and app governance are available.', '#cloud-apps'),
-        @('Microsoft Purview (information protection / DLP)', 'MIP_S_CLP[12]|INFORMATION_PROTECTION_COMPLIANCE_PREMIUM|PURVIEW', 'Sensitivity labels and data loss prevention for the Purview baseline are available.', '#purview-baseline'),
-        @('Microsoft 365 Copilot', 'COPILOT', 'Copilot readiness recommendations apply directly to this tenant.', '#copilot-preparation')
-    )
-    foreach ($p in $products) {
-        $has = [bool]($plans | Where-Object { $_ -match $p[1] })
-        if ($has) { Add-Result 'Licensing' $p[0] 'Licensed' 'Licensed' Info $link $p[2] ($GuideBase + $p[3]) 'ALSO guide: see the matching section' }
-        else { Add-Result 'Licensing' $p[0] 'Not licensed' 'Licensed' Skipped $link ('Not found in this tenant, so recommendations that depend on it are skipped or marked as not applicable. Needs the right license or suite to use: ' + $p[2]) ($GuideBase + $p[3]) 'ALSO guide: see the matching section' }
+    $fullRx = 'SPE_E5|SPE_E7|M365_E5|ENTERPRISEPREMIUM|M365_E7|DEFENDER.*SUITE|PURVIEW.*SUITE|IDENTITY_THREAT_PROTECTION|EMSPREMIUM|M365_SECURITY_COMPLIANCE|ATA_STANDALONE|DEFENDER_FOR_IDENTITY|MCAS'
+    $stdRx = '^SPB$|SPE_E3|ENTERPRISEPACK|SPE_F1|M365_F1|SPE_F3|M365_F3|DESKLESSPACK|O365_BUSINESS_PREMIUM|SMB_BUSINESS_PREMIUM|M365EDU|^EMS$|WIN10_VDA_E3|INTUNE_A'
+    $basicRx = 'O365_BUSINESS_ESSENTIALS|O365_BUSINESS$|SMB_BUSINESS_ESSENTIALS|SMB_BUSINESS$|STANDARDPACK|O365_BUSINESS'
+    $hasFull = [bool](($parts | Where-Object { $_ -match $fullRx }) -or ($plans | Where-Object { $_ -match '^ATA$|ADALLOM_S_(STANDALONE|DISCOVERY)' }))
+    $tier = if ($hasFull) { 'Full' }
+    elseif ($parts | Where-Object { $_ -match $stdRx }) { 'Standard' }
+    elseif ($parts | Where-Object { $_ -match $basicRx }) { 'Basic' }
+    elseif ($plans | Where-Object { $_ -match 'INTUNE_A|WINDEFATP|MDE_SMB|AAD_PREMIUM' }) { 'Standard' }
+    else { 'Standard' }
+    $script:LicenseInfo = [pscustomobject]@{ Tier = $tier; Skus = ($parts -join ', ') }
+    $script:LicenseInfo
+}
+
+function Step-Licensing {
+    Write-Step 'License check' 'Finds your Microsoft 365 license level so only the recommendations that apply to you today are shown.'
+    $lic = Get-LicenseTier
+    $desc = @{
+        Full     = 'Microsoft 365 E5/E7, Defender or Purview suite - all recommendations apply.'
+        Standard = 'Business Premium, E3, F3 or F1 - all recommendations apply except Defender for Identity, Defender for Cloud Apps and app governance.'
+        Basic    = 'Business Basic or Standard - Intune and the Defender products (Endpoint, Office 365, Identity, Cloud Apps) are not included, so those recommendations are skipped.'
     }
+    Add-Result 'Licensing' 'Detected license level' "$($lic.Tier) ($($lic.Skus))" $desc[$lic.Tier] Info $null $desc[$lic.Tier]
+    Write-Host "   $($desc[$lic.Tier])" -ForegroundColor Cyan
 }
 
 function Step-AuditLog {
@@ -585,11 +590,10 @@ function Step-DefenderGuidance {
     Write-Step 'Defender XDR guidance' 'Settings Microsoft offers only in the portal (no public API to read or set them).'
     $na = 'Cannot be read automatically (no Microsoft API)'
     Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications' 'Make sure the right people (security team or your partner) receive Defender incident emails so high-severity incidents are not missed. Also make sure alert policies notify a monitored mailbox.' ($GuideBase + '#alerts') 'ALSO guide: Make sure Defender alerts reach the right people (Email, apps and collaboration, step 3)'
-    $plans = @()
-    try { $plans = @((Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value | Where-Object { $_.capabilityStatus -eq 'Enabled' } | ForEach-Object { $_.servicePlans } | ForEach-Object { $_.servicePlanName }) } catch { Write-Warning "Could not read licenses: $($_.Exception.Message)" }
-    $need = 'requires Microsoft 365 E5 (or E5 Security), the Defender or Purview suite, or a standalone license'
-    $hasMdi = [bool]($plans | Where-Object { $_ -match '^ATA$|DEFENDER_FOR_IDENTITY|MDI' })
-    $hasMda = [bool]($plans | Where-Object { $_ -match 'ADALLOM_S_(STANDALONE|O365|DISCOVERY)|MCAS|CLOUD_APP_SECURITY|DEFENDER_FOR_CLOUD_APPS' })
+
+    $need = 'requires Microsoft 365 E5/E7, the Defender or Purview suite, or a standalone license'
+    $hasMdi = ((Get-LicenseTier).Tier -eq 'Full')
+    $hasMda = $hasMdi
     $mdiLink = 'https://security.microsoft.com/securitysettings/identities'
     $mdiText = 'ALSO guide: Defender for Identity (Extend identity, step 1)'
     $mcaText = 'ALSO guide: Integrate Defender for Cloud Apps with Defender for Endpoint (Email, apps and collaboration, step 1 of the E5 section)'
@@ -609,7 +613,19 @@ function Step-DefenderGuidance {
 }
 #endregion
 
-foreach ($s in $Steps) { Invoke-Safe $s { & "Step-$s" } }
+$basicSkip = 'IntuneEnrollment', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
+foreach ($s in $Steps) {
+    if ($s -in $basicSkip) {
+        $tier = $null
+        try { $tier = (Get-LicenseTier).Tier } catch { }
+        if ($tier -eq 'Basic') {
+            Write-Step "$s (skipped)" 'Not part of Business Basic / Standard licenses.'
+            Add-Result $s 'Intune / Defender recommendations' 'Not included in Business Basic or Standard licenses' 'Requires Business Premium, E3/E5 or a Defender suite' Skipped $null 'Intune and the Defender products are not part of this license level, so these recommendations are skipped. Upgrade the license (for example Microsoft 365 Business Premium) to use them.'
+            continue
+        }
+    }
+    Invoke-Safe $s { & "Step-$s" }
+}
 
 #region report
 New-Item -ItemType Directory -Force $OutputPath | Out-Null
