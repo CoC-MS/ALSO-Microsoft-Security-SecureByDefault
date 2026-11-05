@@ -283,11 +283,12 @@ function Step-UserSettings {
     try {
         $buri = 'https://graph.microsoft.com/beta/policies/authorizationPolicy'
         $beta = Graph GET $buri
-        if ($beta.value) { $beta = @($beta.value)[0] }
+        $patchUri = $buri
+        if ($beta.value) { $beta = @($beta.value)[0]; $patchUri = "$buri/$($beta.id)" }
         $prop = @($beta.defaultUserRolePermissions.Keys) | Where-Object { $_ -match 'agentIdentityBlueprint' } | Select-Object -First 1
         if ($prop) {
             Compare-Setting 'UserSettings' 'Users can register agent identity blueprints' (YN $beta.defaultUserRolePermissions[$prop]) (YN $ref.usersCanRegisterAgentBlueprints) {
-                Graph PATCH $buri @{ defaultUserRolePermissions = @{ $prop = $ref.usersCanRegisterAgentBlueprints } } } $link
+                Graph PATCH $patchUri @{ defaultUserRolePermissions = @{ $prop = $ref.usersCanRegisterAgentBlueprints } } } $link
         }
         else { Add-Result 'UserSettings' 'Users can register agent identity blueprints' 'Not exposed by this tenant API' (YN $ref.usersCanRegisterAgentBlueprints) Manual $link }
     }
