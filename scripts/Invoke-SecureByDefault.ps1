@@ -145,7 +145,12 @@ function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     Write-Host '  A browser window opens. Sign in with your Global Administrator account.'
 }
 
-Show-SignIn 'Microsoft Graph (Entra ID, Intune, tenant settings)' 'Reads and, in Enforce mode, changes tenant-wide settings.' ($graphScopes -join ', ')
+$graphWhy = if ($Mode -eq 'Enforce') {
+    'ENFORCE mode: the script will change tenant-wide settings (Entra user settings, consent, authentication methods, break-glass accounts, SharePoint sharing, Intune/Defender connection). You approve every change before it is applied. This sign-in grants the read AND write permissions listed below.'
+} else {
+    'DISCOVER mode: the script only READS your tenant settings (Entra, Intune, SharePoint, licensing) and compares them with the secure reference. Nothing is changed. This sign-in grants read-only permissions.'
+}
+Show-SignIn 'Microsoft Graph (Entra ID, Intune, SharePoint settings)' $graphWhy ($graphScopes -join ', ')
 Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
 function Get-BrowserToken([string[]]$Scopes) {
     $clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e'   # Microsoft Graph Command Line Tools
@@ -210,7 +215,7 @@ Write-Host "Tenant: $($org.displayName) ($($org.id)), initial domain: $initialDo
 if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.Split('.')[0])-admin.sharepoint.com" }
 
 if ($needsExo) {
-    Show-SignIn 'Exchange Online / Security & Compliance' 'Unified audit log and Defender for Office 365 preset policies.' 'Exchange Online administration (Global Administrator role)'
+    Show-SignIn 'Exchange Online / Security & Compliance' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: turns on the unified audit log and enables Defender for Office 365 preset protection rules, after you approve each change.' } else { 'DISCOVER mode: only READS whether the unified audit log is on and whether Defender for Office 365 preset protection rules are enabled. Nothing is changed.' }) 'Exchange Online administration (Global Administrator role)'
     Initialize-Module ExchangeOnlineManagement
     try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
     catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
