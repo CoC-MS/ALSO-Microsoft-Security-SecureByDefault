@@ -366,7 +366,22 @@ function Step-BreakGlass {
         }
         else { Add-Result 'BreakGlass' 'Group in AU' 'Not in the AU' 'In the AU' Drift $null }
     }
-    Add-Result 'BreakGlass' 'FIDO2 key registration + TAP, CA exclusions, SSPR exclusion, sign-in alert' 'manual' 'done' Manual 'https://learn.microsoft.com/entra/identity/role-based-access-control/security-emergency-access'
+    $bgDoc = 'https://learn.microsoft.com/entra/identity/role-based-access-control/security-emergency-access'
+    $adminLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits'
+    $caLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
+    Add-Result 'BreakGlass' "Add 1-2 trusted admins as administrators of the '$BreakGlassAuName' administrative unit" 'Cannot be checked automatically' "Only these trusted admins can manage the group '$BreakGlassGroupName' and the two break-glass accounts" Manual $adminLink
+    Add-Result 'BreakGlass' 'Set up monitoring and an alert on every sign-in of the break-glass accounts' 'Cannot be checked automatically' 'Alert goes to the security team on any sign-in' Manual $bgDoc
+    Add-Result 'BreakGlass' 'Exclude both break-glass accounts (or the group) from ALL Conditional Access policies' 'Cannot be checked automatically' 'Excluded from every Conditional Access policy' Manual $caLink
+    Add-Result 'BreakGlass' 'Register at least one FIDO2 security key on EACH break-glass account' 'Cannot be checked automatically' 'Each account has its own registered security key' Manual 'https://mysignins.microsoft.com/security-info'
+    if ($Mode -eq 'Enforce') {
+        Write-Host ''
+        Write-Host '   NEXT STEPS for the break-glass accounts (do these now):' -ForegroundColor Yellow
+        Write-Host "   1. Add 1-2 trusted admins to the administrative unit '$BreakGlassAuName' in Entra ID, so only they can manage the group '$BreakGlassGroupName' and the two accounts." -ForegroundColor Yellow
+        Write-Host '   2. Set up monitoring and a sign-in alert on both accounts.' -ForegroundColor Yellow
+        Write-Host '   3. Exclude both accounts from ALL Conditional Access policies.' -ForegroundColor Yellow
+        Write-Host '   4. Register a security key (FIDO2) on each account.' -ForegroundColor Yellow
+        Write-Host "   Guidance: $bgDoc" -ForegroundColor DarkCyan
+    }
 }
 
 function Step-Fido2 {
