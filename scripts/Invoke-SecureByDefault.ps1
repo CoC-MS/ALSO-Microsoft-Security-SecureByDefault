@@ -519,13 +519,16 @@ if ($Mode -eq 'Discover') {
         Write-Host "`nDrift found in: $($driftSteps -join ', ')" -ForegroundColor Yellow
         Write-Host 'Enforce mode changes settings one at a time and asks you to confirm each change. It needs a new Global Administrator sign-in with write permissions.'
         if ((Read-Host 'Do you want to proceed with step-by-step enforce mode? [y/N]') -match '^(y|yes)$') {
-            try { Disconnect-MgGraph | Out-Null } catch { }
-            try { Disconnect-ExchangeOnline -Confirm:$false | Out-Null } catch { }
-            $pass = @{ Mode = 'Enforce'; Steps = $driftSteps; OutputPath = $OutputPath; BreakGlassGroupName = $BreakGlassGroupName; BreakGlassAuName = $BreakGlassAuName }
-            foreach ($k in 'SharePointAdminUrl', 'PilotGroupId', 'AdminConsentReviewerIds') { if ($PSBoundParameters.ContainsKey($k)) { $pass[$k] = $PSBoundParameters[$k] } }
-            if ($Force) { $pass.Force = $true }
-            if ($WhatIfPreference) { $pass.WhatIf = $true }
-            & $PSCommandPath @pass
+            # A fresh process gives a clean sign-in; re-using this one breaks the interactive sign-in.
+            $q = { param($v) "'" + ("$v" -replace "'", "''") + "'" }
+            $argText = "-Mode Enforce -Steps $(($driftSteps | ForEach-Object { & $q $_ }) -join ',') -OutputPath $(& $q $OutputPath) -BreakGlassGroupName $(& $q $BreakGlassGroupName) -BreakGlassAuName $(& $q $BreakGlassAuName)"
+            if ($PSBoundParameters.ContainsKey('SharePointAdminUrl')) { $argText += " -SharePointAdminUrl $(& $q $SharePointAdminUrl)" }
+            if ($PSBoundParameters.ContainsKey('PilotGroupId')) { $argText += " -PilotGroupId $(& $q $PilotGroupId)" }
+            if ($PSBoundParameters.ContainsKey('AdminConsentReviewerIds')) { $argText += " -AdminConsentReviewerIds $(($AdminConsentReviewerIds | ForEach-Object { & $q $_ }) -join ',')" }
+            if ($Force) { $argText += ' -Force' }
+            if ($WhatIfPreference) { $argText += ' -WhatIf' }
+            $exe = (Get-Process -Id $PID).Path
+            & $exe -NoProfile -ExecutionPolicy Bypass -Command "& $(& $q $PSCommandPath) $argText"
         }
         else { Write-Host 'No changes made. Re-run with -Mode Enforce whenever you are ready.' -ForegroundColor Green }
     }
