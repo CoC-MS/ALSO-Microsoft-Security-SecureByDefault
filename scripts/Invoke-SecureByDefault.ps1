@@ -145,7 +145,7 @@ $initialDomain = ($org.verifiedDomains | Where-Object { $_.isInitial }).name
 Write-Host "Tenant: $($org.displayName) ($($org.id)), initial domain: $initialDomain"
 if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.Split('.')[0])-admin.sharepoint.com" }
 
-if ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }) { Initialize-Module ExchangeOnlineManagement; try { Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop } catch { Connect-ExchangeOnline -ShowBanner:$false -Device } }
+if ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }) { Initialize-Module ExchangeOnlineManagement; Connect-ExchangeOnline -ShowBanner:$false -Device }
 #endregion
 
 #region steps
