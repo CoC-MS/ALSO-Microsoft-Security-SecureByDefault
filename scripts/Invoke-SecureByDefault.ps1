@@ -81,11 +81,22 @@ function Write-Step([string]$Title, [string]$Why) {
     Write-Host "   $Why" -ForegroundColor DarkGray
 }
 
-function Confirm-Change([string]$Action) {
+function Confirm-Change([string]$Action, [switch]$Always) {
     if ($Mode -ne 'Enforce') { return $false }
     if (-not $PSCmdlet.ShouldProcess($Action)) { return $false }
     if ($Force) { return $true }
-    return ((Read-Host "   Apply: $Action ? [y/N]") -match '^(y|yes)$')
+    if ($script:SkipAll) { return $false }
+    $script:ChangeNo++
+    if ($script:ApplyAll -and -not $Always) { Write-Host "   Change $($script:ChangeNo): applying - $Action" -ForegroundColor DarkGray; return $true }
+    Write-Host ''
+    Write-Host "   Change $($script:ChangeNo): $Action" -ForegroundColor Yellow
+    $a = Read-Host '   Apply this change? [y] yes  [n] no  [a] yes to all remaining  [s] skip all remaining (default: no)'
+    switch -regex ($a) {
+        '^(a|all)$' { if (-not $Always) { $script:ApplyAll = $true }; return $true }
+        '^(s|skip)$' { $script:SkipAll = $true; return $false }
+        '^(y|yes)$' { return $true }
+        default { return $false }
+    }
 }
 
 function Compare-Setting {
@@ -1504,7 +1515,7 @@ function Step-Purview {
                 $go = Confirm-Change "Deploy $($todo.Count) Purview baseline item(s) with ALSO's Purview toolkit (new DLP policies start in simulation mode)"
                 if ($go -and $existing.Count) { $adopt = Confirm-Change "Update $($existing.Count) existing Purview item(s) so they match the baseline" }
             }
-            if ($retRow.Count -and -not $Force) { $doRet = Confirm-Change 'Also deploy the optional 7-year Exchange retention policy (mail is DELETED after 7 years - get legal approval first)' }
+            if ($retRow.Count -and -not $Force) { $doRet = Confirm-Change 'Also deploy the optional 7-year Exchange retention policy (mail is DELETED after 7 years - get legal approval first)' -Always }
             if ($go -or $doRet) {
                 $mods = Join-Path $tk 'Purview\Modules'
                 . (Join-Path $mods 'PurviewRunLog.ps1'); Initialize-PurviewRunLog
@@ -1629,22 +1640,32 @@ $buildSections = {
     $badge = if ($ManualOnly) { "<span class='pill Manual'>$($items.Count) to do</span>" } elseif ($bad) { "<span class='pill Drift'>$bad to fix</span>" } else { "<span class='pill Compliant'>all good</span>" }
     $lastGrp = '~'
     $rows = foreach ($r in $items) {
-        if ($r.Group -and $r.Group -ne $lastGrp) { "<tr class='grp'><td colspan='5'>$(& $enc $r.Group)</td></tr>" }
+        if ($r.Group -and $r.Group -ne $lastGrp) { "<tr class='grp' data-f='grp'><td colspan='5'>$(& $enc $r.Group)</td></tr>" }
         $lastGrp = $r.Group
         $l = if ($r.Link) { "<a href='$(& $enc $r.Link)' target='_blank'>Open in portal &rarr;</a>" } else { '' }
         $d = if ($r.Detail) { "<div class='why'>$(& $enc $r.Detail)$(if ($r.Doc) { " <a href='$(& $enc $r.Doc)' target='_blank'>$(& $enc $r.DocText) &rarr;</a>" })</div>" } else { '' }
-        "<tr><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b>$d</td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
+        $chg = if ($r.Status -eq 'Drift' -and $r.Current -and $r.Expected) { "<div class='chg'>What will change: from <b>$(& $enc $r.Current)</b> to <b>$(& $enc $r.Expected)</b></div>" } else { '' }
+        $grpOf = switch ($r.Status) { 'Drift' { 'todo' } 'Error' { 'todo' } 'Manual' { 'todo' } 'Compliant' { 'ok' } 'Fixed' { 'ok' } default { 'info' } }
+        "<tr data-f='$grpOf'><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b>$chg$d</td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
     }
     "<section><h2>$(& $enc $cat) $badge</h2><table><tr><th>State</th><th>Setting</th><th>Current value</th><th>Expected</th><th></th></tr>$($rows -join '')</table></section>"
     }
 }
 $autoSections = & $buildSections $false
+$needs = @($reportResults | Where-Object { $_.Status -in 'Drift', 'Error' })
+$verdict = if ($needs.Count) { "<div class='verdict bad'><h2>$($needs.Count) setting(s) need your attention</h2><p>Everything else is in good shape or listed for information. Start with the list below, then work through the manual checks tab.</p>" } else { "<div class='verdict good'><h2>All automated checks are in good shape</h2><p>No automated setting needs a change. Review the manual checks tab for the items that need a person.</p>" }
+if ($needs.Count) {
+    $fi = foreach ($n in ($needs | Select-Object -First 10)) { "<li><b>$(& $enc $n.Setting)</b> &ndash; from <i>$(& $enc ($n.Current -replace '\s+', ' '))</i> to <i>$(& $enc ($n.Expected -replace '\s+', ' '))</i>$(if ($n.Link) { " <a href='$(& $enc $n.Link)' target='_blank'>open &rarr;</a>" })</li>" }
+    $verdict += "<h3>Fix first</h3><ol>$($fi -join '')</ol>$(if ($needs.Count -gt 10) { "<p>...and $($needs.Count - 10) more in the sections below.</p>" })"
+}
+$verdict += '</div>'
+$filters = "<div class='filters'>Show: <button class='fl on' data-f='all' onclick=""fl('all')"">Everything</button><button class='fl' data-f='todo' onclick=""fl('todo')"">Needs action</button><button class='fl' data-f='ok' onclick=""fl('ok')"">OK</button><button class='fl' data-f='info' onclick=""fl('info')"">Info</button><button class='fl' onclick='window.print()'>Print / save as PDF</button></div>"
 $manualSections = & $buildSections $true
 $manualCount = @($reportResults | Where-Object Status -eq 'Manual').Count
 $autoCount = $total - $manualCount
 $tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks and actions ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual checks and actions ($manualCount)</button></div>"
 $manualIntro = "<p class='intro'>These items cannot be read or changed automatically because Microsoft offers no API for them, or they need a person to decide. Work through them in the portal using the links and guides.</p>"
-$js = "function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
+$js = "function fl(f){document.querySelectorAll('.fl[data-f]').forEach(function(b){b.classList.toggle('on',b.dataset.f===f)});document.querySelectorAll('tr[data-f]').forEach(function(r){r.style.display=(f==='all'||r.dataset.f===f||r.dataset.f==='grp')?'':'none'})}function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
 $css = @'
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fa;color:#1d2b3a}
 header{background:#fff;border-bottom:1px solid #dde3ea;padding:20px 40px}
@@ -1662,16 +1683,24 @@ td{white-space:pre-line;padding:9px 8px;border-bottom:1px solid #eef2f6;vertical
 .why{margin-top:6px;font-size:.82rem;font-weight:400;color:#4a5a6a;line-height:1.45}a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
 .next{background:#fff;border:1px solid #dde3ea;border-left:5px solid #00757d;border-radius:10px;padding:8px 24px 22px;margin:28px 0}.next p{color:#5b6b7c;max-width:760px}.btn{display:inline-block;background:#0b5cab;color:#fff!important;padding:10px 20px;border-radius:8px;font-weight:600}.btn:hover{text-decoration:none;background:#094a8c}
 .grp td{background:#eef6f6;font-weight:600;color:#00575d;padding:8px;border-bottom:1px solid #d3e6e7}
+.verdict{background:#fff;border:1px solid #dde3ea;border-left:6px solid #2e8b57;border-radius:10px;padding:4px 24px 14px;margin-bottom:22px}.verdict.bad{border-left-color:#d98e04}.verdict h3{margin:14px 0 4px}.verdict ol{margin:4px 0;padding-left:22px;line-height:1.6}.chg{margin-top:4px;font-size:.82rem;color:#7a5200}.filters{margin-bottom:14px;color:#5b6b7c}.fl{border:1px solid #c9d3dd;background:#fff;border-radius:16px;padding:4px 14px;margin-left:6px;cursor:pointer;font-size:.85rem}.fl.on{background:#00757d;color:#fff;border-color:#00757d}@media print{.tabs,.filters,.btn,.next{display:none}.pane{display:block!important}body{background:#fff}}
 .pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.78rem;font-weight:600;color:#fff;background:#9aa7b4}
 .pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
 '@
 $nextBox = if ($Mode -eq 'Enforce') { "<div class='next'><h2>Done reviewing these settings? Continue with deeper configuration.</h2><p>Secure by Default sets the tenant-wide prerequisites. Next, use the ALSO Microsoft Security Policy Templates Navigator to choose the policy templates and configuration that fit your licenses and platforms.</p><a class='btn' href='https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' target='_blank'>Open the Navigator &rarr;</a></div>" } else { '' }
-$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$tabs<div class='pane' id='auto'>$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
+$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$verdict$tabs<div class='pane' id='auto'>$filters$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
 [IO.File]::WriteAllText($html, $page, (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "`nSummary:" -ForegroundColor Cyan
 $script:Results | Group-Object Status | ForEach-Object { Write-Host ("  {0,-10} {1}" -f $_.Name, $_.Count) }
 Write-Host "Reports: $json`n         $html"
+if ($Mode -eq 'Enforce') {
+    $fx = @($script:Results | Where-Object Status -eq 'Fixed'); $er = @($script:Results | Where-Object Status -eq 'Error'); $left = @($script:Results | Where-Object Status -eq 'Drift')
+    Write-Host "`nWhat happened in this run:" -ForegroundColor Cyan
+    Write-Host "  Changed : $($fx.Count)" -ForegroundColor Green; $fx | ForEach-Object { Write-Host "     - $($_.Setting)" -ForegroundColor Green }
+    Write-Host "  Failed  : $($er.Count)" -ForegroundColor $(if ($er.Count) { 'Red' } else { 'Gray' }); $er | ForEach-Object { Write-Host "     - $($_.Setting)" -ForegroundColor Red }
+    Write-Host "  Not applied (declined or skipped): $($left.Count)" -ForegroundColor $(if ($left.Count) { 'Yellow' } else { 'Gray' }); $left | ForEach-Object { Write-Host "     - $($_.Setting)" -ForegroundColor Yellow }
+}
 if ($Mode -eq 'Enforce') {
     Write-Host "`nDone? Continue with deeper configuration in the ALSO Policy Templates Navigator:" -ForegroundColor Cyan
     Write-Host '  https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' -ForegroundColor Cyan
@@ -1680,8 +1709,11 @@ try { Invoke-Item $html } catch { Write-Host "Open the HTML report manually: $ht
 if ($Mode -eq 'Discover') {
     $driftSteps = @($script:Results | Where-Object Status -eq 'Drift' | Select-Object -ExpandProperty Step -Unique)
     if ($driftSteps) {
+        Write-Host "`nPlanned changes if you continue (nothing has been changed yet):" -ForegroundColor Yellow
+        $pn = 0
+        foreach ($d in ($script:Results | Where-Object Status -eq 'Drift')) { $pn++; Write-Host ("  {0,2}. {1}: from '{2}' to '{3}'" -f $pn, $d.Setting, (($d.Current -replace '\s+', ' ').Trim()), (($d.Expected -replace '\s+', ' ').Trim())) }
         Write-Host "`nDrift found in: $($driftSteps -join ', ')" -ForegroundColor Yellow
-        Write-Host 'Enforce mode changes settings one at a time and asks you to confirm each change. It needs a new Global Administrator sign-in with write permissions.'
+        Write-Host 'Enforce mode asks you to confirm each change (answer 'a' to apply all remaining, or 's' to skip them). It needs a new Global Administrator sign-in with write permissions.'
         if ((Read-Host 'Do you want to proceed with step-by-step enforce mode? [y/N]') -match '^(y|yes)$') {
             # A fresh process gives a clean sign-in; re-using this one breaks the interactive sign-in.
             $q = { param($v) "'" + ("$v" -replace "'", "''") + "'" }
