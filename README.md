@@ -6,6 +6,11 @@ Automation script that sets tenant-wide Microsoft 365 settings **not covered by 
 ./scripts/Invoke-SecureByDefault.ps1                       # Discover (read-only)
 ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce -WhatIf # dry run
 ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce         # guided enforcement
+./scripts/Invoke-SecureByDefault.ps1 -Engine Dsc -TenantId <id> -ApplicationId <id> -CertificateThumbprint <thumb>   # native Microsoft365DSC
+./scripts/Invoke-SecureByDefault.ps1 -Engine Python        # Graph-only, cross-platform
+```
+
+**Prerequisites:** PowerShell 7+ (5.1 for `-Engine Dsc`), a Global Administrator account, modules install to the current user on demand. Always run Discover first and review `sbd-reports\*.html`. Site: https://coc-ms.github.io/ALSO-Microsoft-Security-SecureByDefault/ (Settings > Pages > Source: GitHub Actions).
 ```
 
 ## Engines (one shared reference state: `config/reference-state.json`)
@@ -31,5 +36,6 @@ Reference values live in `config/reference-state.json`; review them for your org
 
 ## GitHub Pages
 Site in `docs/`, deployed by `.github/workflows/pages.yml` (Settings > Pages > Source: GitHub Actions). `docs/also-logo.png` is the ALSO logo, copied from CoC-MS/ALSO-security-policy-templates-navigator.
+
 
 
