@@ -360,6 +360,25 @@ function Step-Consent {
 function Step-BreakGlass {
     Write-Step 'Emergency access (break-glass) accounts' '2 cloud-only Global Admins on onmicrosoft.com, group, restricted-management AU.'
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/AllUsers'
+    $refUpns = @($script:Reference.breakGlass.accountNames | ForEach-Object { "$_@$initialDomain".ToLower() })
+    $found = @()
+    try {
+        $words = 'emergency', 'break', 'breakglass', 'glass', 'bg'
+        $q = (($words | ForEach-Object { "`"displayName:$_`" OR `"userPrincipalName:$_`"" }) -join ' OR ')
+        $res = Invoke-MgGraphRequest -Method GET -Uri ('https://graph.microsoft.com/v1.0/users?$count=true&$top=100&$select=displayName,userPrincipalName&$search=' + [uri]::EscapeDataString($q)) -Headers @{ ConsistencyLevel = 'eventual' }
+        $found = @($res.value | Where-Object { $_.userPrincipalName.ToLower() -notin $refUpns })
+    }
+    catch { Write-Warning "Could not search for existing emergency accounts: $($_.Exception.Message)" }
+    if ($found) {
+        $list = ($found | ForEach-Object { $_.userPrincipalName }) -join ', '
+        Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' "Found: $list" 'Verify these are proper break-glass accounts' Info $link 'These accounts look like emergency or break-glass accounts. Check that each is cloud-only, has a permanent Global Administrator role, is excluded from Conditional Access, has its own FIDO2 key and is monitored. If they are, you may not need to create new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+    }
+    else {
+        Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' 'None found by name' 'Double-check manually before creating new accounts' Manual $link 'No account with emergency, break, breakglass or bg in its name was found. This only means none exist under those names. Please double-check in Entra ID (Users and Roles) that your tenant does not already have emergency access accounts under another name before creating new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        if ($Mode -eq 'Enforce') {
+            Write-Host '   No existing accounts named emergency / break / breakglass / bg were found. This only means none exist under those names - please double-check in Entra ID first.' -ForegroundColor Yellow
+        }
+    }
     $users = @(foreach ($n in $script:Reference.breakGlass.accountNames) {
         $upn = "$n@$initialDomain"
         $u = (Graph GET "https://graph.microsoft.com/v1.0/users?`$filter=userPrincipalName eq '$upn'").value | Select-Object -First 1
