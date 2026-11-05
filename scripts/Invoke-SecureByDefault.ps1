@@ -370,8 +370,9 @@ function Step-BreakGlass {
     }
     catch { Write-Warning "Could not search for existing emergency accounts: $($_.Exception.Message)" }
     if ($found) {
+        Write-Host '   Existing accounts were found. Creating new ones below is optional. Note: names like breakglass or emergency are not recommended - use generic names.' -ForegroundColor Yellow
         $list = ($found | ForEach-Object { $_.userPrincipalName }) -join ', '
-        Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' "Found: $list" 'Verify these are proper break-glass accounts' Info $link 'These accounts look like emergency or break-glass accounts. Check that each is cloud-only, has a permanent Global Administrator role, is excluded from Conditional Access, has its own FIDO2 key and is monitored. If they are, you may not need to create new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
+        Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' "Found: $list" 'Verify these are proper break-glass accounts' Info $link 'These accounts look like emergency or break-glass accounts. Naming: it is not recommended to give break-glass accounts names like breakglass or emergency, because that makes them an obvious target for attackers. Use generic, unremarkable names (this script uses svr_ea_01 and svr_ea_02). Also check that each is cloud-only, has a permanent Global Administrator role, is excluded from Conditional Access, has its own FIDO2 key and is monitored. If they are, you may not need to create new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
     }
     else {
         Add-Result 'BreakGlass' 'Existing emergency accounts (name contains emergency, break, breakglass or bg)' 'None found by name' 'Double-check manually before creating new accounts' Manual $link 'No account with emergency, break, breakglass or bg in its name was found. This only means none exist under those names. Please double-check in Entra ID (Users and Roles) that your tenant does not already have emergency access accounts under another name before creating new ones.' $BreakGlassPdf 'Break-glass best practices (PDF)'
@@ -394,6 +395,7 @@ function Step-BreakGlass {
             Remove-Variable pw
             Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Created' Fixed $link; $u
         }
+        elseif ($found) { Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Optional - can be created if needed' Info $link 'Existing emergency accounts were found, so creating these two new accounts is optional. Create them only if the existing accounts do not meet the break-glass requirements.' $BreakGlassPdf 'Break-glass best practices (PDF)' }
         else { Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Should exist' Drift $link }
     })
 
