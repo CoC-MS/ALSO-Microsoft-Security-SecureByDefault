@@ -150,7 +150,7 @@ if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be cha
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool]($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' })
 $needsPurview = [bool]($Steps -contains 'Purview')
-$signInCount = 1 + [int]$needsExo + [int]$needsPurview
+$signInCount = 1 + [int]$needsExo + 2 * [int]$needsPurview
 $script:signInNo = 0
 function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     $script:signInNo++
@@ -266,7 +266,7 @@ if ($needsPurview) {
     Initialize-Module ExchangeOnlineManagement
     $ippsOk = $false
     try {
-        $ippsTok = Get-BrowserToken @('.default') $true 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'
+        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'
         Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true
     }
     catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
@@ -276,6 +276,15 @@ if ($needsPurview) {
         else { throw "Purview sign-in failed: $($_.Exception.Message)" }
     } }
     Write-Host '  Signed in to Microsoft Purview.' -ForegroundColor Green
+    Show-SignIn 'SharePoint Online admin (Purview tenant settings)' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: reads and, after you approve, turns on sensitivity label support for SharePoint/OneDrive and PDF files (required for labels to work on documents).' } else { 'DISCOVER mode: only READS the SharePoint settings for sensitivity labels. Nothing is changed.' }) 'SharePoint Online administration (Global Administrator role)'
+    $script:SpoOk = $false
+    try {
+        Initialize-Module Microsoft.Online.SharePoint.PowerShell
+        Connect-SPOService -Url $SharePointAdminUrl -ErrorAction Stop
+        $script:SpoOk = $true
+        Write-Host '  Signed in to SharePoint Online.' -ForegroundColor Green
+    }
+    catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label settings will be listed as manual checks." -ForegroundColor DarkGray }
 }
 #endregion
 
@@ -1185,6 +1194,7 @@ function Step-Purview {
         return
     }
 
+    $spoLink = "$SharePointAdminUrl/_layouts/15/online/AdminHome.aspx#/settings"
     $check = {
         $rows = [System.Collections.Generic.List[object]]::new()
         $addRow = { param($Grp, $Setting, $Cur, $Exp, $Status, $Detail, $Lnk, $Deploy)
@@ -1204,7 +1214,16 @@ function Step-Purview {
             $auOn = $au.Status -in 'Compliant', 'Fixed'
             & $addRow $g1 'Unified audit log' $(if ($auOn) { 'On' } else { 'Off' }) 'On' $(if ($auOn) { 'Compliant' } else { 'Drift' }) $auWhy $auLink $false
         }
-        else { & $addRow $g1 'Unified audit log' 'Checked by the Unified audit log step' 'On' Info 'Add the AuditLog step to read and enable it.' $auLink $false }        & $addRow $g1 'Sensitivity labels for PDF files and SharePoint/OneDrive labeling' 'Cannot be read without a separate SharePoint admin sign-in' 'Turned on' Manual 'These are SharePoint Online tenant settings (AIP integration and PDF labeling). New tenants have them on already; for existing tenants confirm in the SharePoint admin center under Settings > Sensitivity labels, or run the toolkit''s Setup-TenantSettings.ps1.' $lbl $false
+        else { & $addRow $g1 'Unified audit log' 'Checked by the Unified audit log step' 'On' Info 'Add the AuditLog step to read and enable it.' $auLink $false }        $spoT = $null
+        if ($script:SpoOk) { try { $spoT = Get-SPOTenant -ErrorAction Stop } catch { $spoT = $null } }
+        if ($spoT) {
+            & $addRow $g1 'Sensitivity labels in SharePoint and OneDrive' (& $yn ($spoT.EnableAIPIntegration -eq $true)) 'On' $(if ($spoT.EnableAIPIntegration -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets SharePoint and OneDrive read and apply sensitivity labels (and encrypt labelled files). Without it, labels do not work on files in the cloud.' $spoLink $false
+            if ($spoT.PSObject.Properties['EnableSensitivityLabelforPDF']) {
+                & $addRow $g1 'Sensitivity labels for PDF files' (& $yn ($spoT.EnableSensitivityLabelforPDF -eq $true)) 'On' $(if ($spoT.EnableSensitivityLabelforPDF -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets labels be applied to, and read from, PDF files in SharePoint and OneDrive.' $spoLink $false
+            }
+            else { & $addRow $g1 'Sensitivity labels for PDF files' 'Built in' 'On' Compliant 'Microsoft now supports labels on PDF files by default, so there is no setting to change.' $spoLink $false }
+        }
+        else { & $addRow $g1 'Sensitivity labels in SharePoint, OneDrive and for PDF files' 'Could not be read (SharePoint sign-in not available)' 'On' Manual 'Open the SharePoint admin center > Settings > Sensitivity labels and confirm that label support is on. New tenants have it on already.' $spoLink $false }
 
         $g2 = 'ALSO baseline (suggested): Sensitivity labels'; $g2x = 'Your existing tenant: Sensitivity labels'
         $labels = @()
@@ -1366,7 +1385,20 @@ function Step-Purview {
     }
 
     $first = @(& $check 3>$null)
-    $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
+    if ($Mode -eq 'Enforce' -and $script:SpoOk) {
+        $spoDrift = @($first | Where-Object { $_.Group -eq 'Tenant settings' -and $_.Status -eq 'Drift' -and $_.Setting -like 'Sensitivity labels*' })
+        if ($spoDrift.Count -and (Confirm-Change "Turn on SharePoint/OneDrive sensitivity label support: $(($spoDrift | ForEach-Object { $_.Setting }) -join '; ')")) {
+            foreach ($s in $spoDrift) {
+                try {
+                    if ($s.Setting -like '*PDF*') { Set-SPOTenant -EnableSensitivityLabelforPDF $true -ErrorAction Stop }
+                    else { Set-SPOTenant -EnableAIPIntegration $true -ErrorAction Stop }
+                }
+                catch { Add-Result 'Purview' "Turning on: $($s.Setting)" $_.Exception.Message 'On' Error $spoLink 'SharePoint rejected the change. Turn it on in the SharePoint admin center.' $doc $docText }
+            }
+            $first = @(& $check 3>$null)
+            foreach ($f in $first) { $o = $spoDrift | Where-Object { $_.Setting -eq $f.Setting }; if ($o -and $f.Status -eq 'Compliant') { $f.Status = 'Fixed'; $f.Current = $o.Current } }
+        }
+    }    $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
     $final = $first
     $deployed = $false
     $retRow = @($first | Where-Object { $_.Setting -like 'Optional: BP-ALSO*' -and $_.Status -eq 'Info' })
