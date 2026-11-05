@@ -1,0 +1,23 @@
+{
+  "userSettings": {
+    "usersCanRegisterApps": false,
+    "usersCanRegisterAgentBlueprints": false,
+    "restrictTenantCreation": true,
+    "usersCanCreateSecurityGroups": false,
+    "guestUserRoleId": "10dae51f-b6af-4016-8d66-8c2a99b929b3",
+    "restrictAdminCenter": "Yes",
+    "linkedIn": "Yes",
+    "showKeepSignedIn": "No"
+  },
+  "consent": {
+    "userConsentPolicy": "ManagePermissionGrantsForSelf.microsoft-user-default-low",
+    "requestDurationInDays": 30
+  },
+  "breakGlass": {
+    "accountNames": ["svr_ea_01", "svr_ea_02"]
+  },
+  "sharePoint": {
+    "sharingCapability": "ExternalUserSharingOnly",
+    "defaultSharingLinkType": "Direct"
+  }
+}

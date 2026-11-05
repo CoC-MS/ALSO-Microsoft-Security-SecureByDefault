@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ALSO Secure by Default - secure Microsoft 365 tenants from day 1</title>
+<meta name="description" content="Automation script that sets tenant-wide Microsoft 365 security prerequisites not covered by ALSO JSON configuration files. Discover first, enforce second.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg"></div><div class="orb o1"></div><div class="orb o2"></div>
+<header>
+  <a class="logo" href="#top" aria-label="ALSO"><img src="also-logo.svg" alt="ALSO"></a>
+  <nav><a href="#why">Why</a><a href="#covers">What it covers</a><a href="#how">How it works</a><a href="#start">Get started</a></nav>
+  <a class="btn" href="https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault">GitHub</a>
+</header>
+
+<main id="top">
+<div class="hero">
+  <span class="pill">Microsoft 365 &middot; Entra &middot; Intune &middot; Defender</span>
+  <h1>Secure by <span class="grad">Default</span></h1>
+  <p>An automation script that sets the tenant-wide settings not covered by ALSO's JSON configuration files &mdash; so new and existing tenants start from a secure state on day 1, before deeper configuration begins.</p>
+  <div class="cta"><a class="btn" href="#start">Run discovery</a><a class="btn ghost" href="#covers">See what it checks</a></div>
+  <div class="term"><div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="c"># read-only discovery - nothing is changed</span>
+<span class="b">PS&gt;</span> ./scripts/Invoke-SecureByDefault.ps1
+  [<span class="g">Compliant</span>] UnifiedAuditLogIngestionEnabled: True
+  [<span class="y">Drift    </span>] Users can register applications: True (expected False)
+  [<span class="y">Drift    </span>] FIDO2 state: disabled (expected enabled)
+  [<span class="b">Manual   </span>] Intune connection ON -&gt; security.microsoft.com/...
+<span class="c"># happy with the report? enforce step by step</span>
+<span class="b">PS&gt;</span> ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce</pre></div>
+  <div class="stats">
+    <div class="stat"><b>12</b><span>guided steps</span></div>
+    <div class="stat"><b>0</b><span>changes in Discover mode</span></div>
+    <div class="stat"><b>2</b><span>break-glass accounts</span></div>
+    <div class="stat"><b>JSON+HTML</b><span>reports every run</span></div>
+  </div>
+</div>
+
+<section id="why">
+  <h2 class="reveal">Why Secure by Default</h2>
+  <p class="sub reveal">ALSO's JSON configuration files cover policies and baselines. Some prerequisites live outside them: tenant switches, emergency access, authentication methods, enrollment and connector state. This tool closes that gap.</p>
+  <div class="grid">
+    <div class="card reveal"><div class="ic">🔍</div><h3>Discover before enforce</h3><p>Default mode is strictly read-only and produces a drift report against the reference state.</p></div>
+    <div class="card reveal"><div class="ic">🧭</div><h3>Guided step by step</h3><p>Each change is explained and confirmed. Supports <code>-WhatIf</code> for dry runs.</p></div>
+    <div class="card reveal"><div class="ic">🛡️</div><h3>Safe by design</h3><p>Passwords are never logged or written to reports; risky policies start in report-only.</p></div>
+    <div class="card reveal"><div class="ic">⚙️</div><h3>Best-supported tooling</h3><p>PowerShell with Microsoft Graph, Exchange Online and SharePoint modules &mdash; the only stack covering all workloads. Pairs with Microsoft365DSC for drift control.</p></div>
+  </div>
+</section>
+
+<section id="covers">
+  <h2 class="reveal">What it covers</h2>
+  <p class="sub reveal">Automated where an API exists; otherwise the report links straight to the right portal blade.</p>
+  <div class="grid">
+    <div class="card reveal"><div class="ic">📜</div><h3>Unified audit log</h3><p>Check and activate ingestion.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">👤</div><h3>Entra user &amp; guest settings</h3><p>App registration, tenant creation, security groups, guest access, admin center.</p><span class="tag auto">automated</span><span class="tag man">partly portal</span></div>
+    <div class="card reveal"><div class="ic">✅</div><h3>Consent &amp; admin workflow</h3><p>Low-impact user consent and admin consent requests.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">🚨</div><h3>Break-glass accounts</h3><p>Two onmicrosoft.com Global Admins, security group, restricted-management administrative unit.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">🔑</div><h3>Passkeys / FIDO2</h3><p>Enable FIDO2 and review all authentication methods.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">📁</div><h3>SharePoint &amp; OneDrive sharing</h3><p>Tenant sharing level, default link type, link expiry.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">💻</div><h3>Intune enrollment &amp; LAPS</h3><p>MDM auto-enrollment scope, local admin rights, Entra LAPS.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">📧</div><h3>Defender for Office 365</h3><p>Standard and Strict preset policies and their recipients.</p><span class="tag auto">automated</span></div>
+    <div class="card reveal"><div class="ic">🛰️</div><h3>Defender for Endpoint</h3><p>Provisioning, Intune connection, connector status, alerts, Defender for Identity, app governance.</p><span class="tag auto">checks</span><span class="tag man">guided</span></div>
+  </div>
+</section>
+
+<section id="how">
+  <h2 class="reveal">How it works</h2>
+  <div class="timeline">
+    <div class="step reveal"><h3>Connect</h3><p>Sign in interactively with least-privilege scopes (read-only in Discover mode).</p></div>
+    <div class="step reveal"><h3>Discover</h3><p>Compare the tenant with <code>config/reference-state.json</code>. Nothing changes.</p></div>
+    <div class="step reveal"><h3>Review</h3><p>Open the HTML report; adjust the reference to fit your organization.</p></div>
+    <div class="step reveal"><h3>Enforce</h3><p>Confirm each change. Re-run any time to verify compliance.</p></div>
+  </div>
+</section>
+
+<section id="start">
+  <h2 class="reveal">Get started</h2>
+  <p class="sub reveal">Requires PowerShell 7+ and a Global Administrator (or equivalent) account. Modules install to the current user on demand.</p>
+<pre class="code reveal">git clone https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault
+cd ALSO-Microsoft-Security-SecureByDefault
+
+# 1. discovery (read-only)
+./scripts/Invoke-SecureByDefault.ps1
+
+# 2. dry-run selected steps
+./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce -Steps AuditLog,Fido2 -WhatIf
+
+# 3. guided enforcement
+./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce</pre>
+</section>
+</main>
+<footer>ALSO Secure by Default &middot; Review the reference state against your organization's requirements before enforcing.</footer>
+<script>
+const io=new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){x.target.classList.add('in');io.unobserve(x.target)}}),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
