@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   ALSO Secure by Default - tenant-wide Microsoft 365 baseline automation.
 
@@ -7,9 +7,6 @@
   Default mode is Discover (read-only). Use -Mode Enforce to apply changes;
   each change is confirmed step by step (-Force skips prompts, -WhatIf dry-runs).
 
-  Technology choice: PowerShell. Exchange Online, SharePoint Online and Security & Compliance
-  have no Python SDKs, and Microsoft Graph is fully reachable from PowerShell.
-  Microsoft365DSC is the recommended follow-up for drift control of deeper configuration.
 
 .PARAMETER Mode     Discover (read-only, default) or Enforce.
 .PARAMETER Steps    Subset of step ids. Default: all.
@@ -37,11 +34,7 @@ param(
     [string]$BreakGlassGroupName = 'SBD-BreakGlass-Accounts',
     [string]$BreakGlassAuName = 'Identity-Governance-AU',
     [string[]]$AdminConsentReviewerIds,
-    [switch]$Force,
-    [ValidateSet('Native', 'Dsc', 'Python')][string]$Engine = 'Native',
-    [string]$TenantId,
-    [string]$ApplicationId,
-    [string]$CertificateThumbprint
+    [switch]$Force
 )
 
 $banner = @'
@@ -51,24 +44,7 @@ $banner = @'
  / ___ \| |___ ___) | |_| |   SECURE BY DEFAULT
 /_/   \_\_____|____/ \___/    secure from day 1
 '@
-$banner -split "`n" | ForEach-Object -Begin { $c = 'Green', 'Cyan', 'Yellow', 'Magenta', 'Blue'; $i = 0 } { Write-Host $_ -ForegroundColor $c[$i++ % 5] }
-
-# One entry point: delegate to the DSC or Python engine when requested.
-if ($Engine -eq 'Dsc') {
-    $a = @{ Mode = $Mode; TenantId = $TenantId; ApplicationId = $ApplicationId; CertificateThumbprint = $CertificateThumbprint }
-    $dscSteps = @($Steps | Where-Object { $_ -in 'AuditLog', 'UserSettings', 'Consent', 'Fido2', 'SharePoint', 'Laps' })
-    if ($dscSteps) { $a.Steps = $dscSteps }
-    & (Join-Path $PSScriptRoot 'Invoke-SecureByDefaultDsc.ps1') @a
-    return
-}
-if ($Engine -eq 'Python') {
-    $py = Get-Command python, python3 -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $py) { throw 'Python 3 not found.' }
-    $pyArgs = @((Join-Path $PSScriptRoot '..\python\sbd_graph.py'), '--mode', $Mode.ToLower(), '--output', $OutputPath)
-    if ($Force) { $pyArgs += '--yes' }
-    & $py.Source @pyArgs
-    return
-}
+$banner -split "`n" | ForEach-Object { Write-Host $_ -ForegroundColor Cyan }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
