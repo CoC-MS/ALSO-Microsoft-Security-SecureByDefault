@@ -339,7 +339,7 @@ if ($needsSpo) {
 }
 function Invoke-SpoCsom([string]$Actions, [string]$Paths) {
     $xml = "<Request AddExpandoFieldTypeSuffix=`"true`" SchemaVersion=`"15.0.0.0`" LibraryVersion=`"16.0.0.0`" ApplicationName=`"ALSO`" xmlns=`"http://schemas.microsoft.com/sharepoint/clientquery/2009`"><Actions>$Actions</Actions><ObjectPaths>$Paths</ObjectPaths></Request>"
-    $resp = Invoke-RestMethod -Method Post -Uri "$SharePointAdminUrl/_vti_bin/client.svc/ProcessQuery" -Headers @{ Authorization = "Bearer $($script:SpoToken)" } -ContentType 'text/xml' -Body $xml -ErrorAction Stop
+    $resp = Invoke-RestMethod -Method Post -Uri "$SharePointAdminUrl/_vti_bin/client.svc/ProcessQuery" -Headers @{ Authorization = "Bearer $($script:SpoToken)" } -ContentType 'text/xml' -Body $xml -TimeoutSec 30 -ErrorAction Stop
     $err = @($resp) | Where-Object { $_.ErrorInfo } | Select-Object -First 1
     if ($err) { throw $err.ErrorInfo.ErrorMessage }
     $resp
@@ -1409,7 +1409,7 @@ function Step-Purview {
             & $addRow $g1 'Unified audit log' $(if ($auOn) { 'On' } else { 'Off' }) 'On' $(if ($auOn) { 'Compliant' } else { 'Drift' }) $auWhy $auLink $false
         }
         else { & $addRow $g1 'Unified audit log' 'Checked by the Unified audit log step' 'On' Info 'Add the AuditLog step to read and enable it.' $auLink $false }        $spoT = $null
-        if ($script:SpoOk) { try { $spoT = Get-SpoTenantCsom } catch { $spoT = $null } }
+        if ($script:SpoOk) { try { $spoT = Get-SpoTenantCsom } catch { $spoT = $null; Write-Host "  SharePoint label settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray } }
         if ($spoT) {
             & $addRow $g1 'Sensitivity labels in SharePoint and OneDrive' (& $yn ($spoT.EnableAIPIntegration -eq $true)) 'On' $(if ($spoT.EnableAIPIntegration -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets SharePoint and OneDrive read and apply sensitivity labels (and encrypt labelled files). Without it, labels do not work on files in the cloud.' $spoLink $false
             if ($spoT.PSObject.Properties['EnableSensitivityLabelforPDF']) {
