@@ -17,7 +17,8 @@ git clone https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault
 cd ALSO-Microsoft-Security-SecureByDefault
 
 ./scripts/Invoke-SecureByDefault.ps1                        # 1. discovery (read-only)
-./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce          # 2. guided enforcement
+./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce          # 2. guided enforcement (all, one by one or per Purview part)
+./scripts/Invoke-SecureByDefault.ps1 -Mode Wipe             # 3. optional: remove what the script deployed
 ```
 
 Run it from PowerShell 7 as administrator. The report has two tabs: Automated checks and actions, and Manual checks and actions. In Enforce mode you can apply changes one by one, apply all remaining, and deploy policies all at once or one by one. Existing Conditional Access, Intune and Purview policies are listed and never changed.
@@ -41,3 +42,5 @@ Expected values live in `config/reference-state.json`. Review them against your 
 Continue with deeper configuration in the [ALSO Microsoft Security Policy Templates Navigator](https://coc-ms.github.io/ALSO-security-policy-templates-navigator/).
 
 The logo is copied from the Navigator repository.
+
+Sign-ins: up to three browser sign-ins (Microsoft Graph, Exchange, Purview), each explained before it opens. Enforce ends with a *What happened in this run* summary (changed, failed with reason, not applied, manual steps left). Wipe removes Conditional Access policies, Intune policies, Purview items and the break-glass accounts the script deployed; you choose all, one by one or none per category, and must type WIPE. Tenant-wide settings are not reverted.
