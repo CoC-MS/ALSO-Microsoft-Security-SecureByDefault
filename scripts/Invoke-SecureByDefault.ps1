@@ -193,7 +193,8 @@ if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be cha
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool](($Mode -ne 'Wipe') -and ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }))
 $needsPurview = [bool]($Steps -contains 'Purview')
-$signInCount = 1 + [int]$needsExo + [int]$needsPurview
+$needsSpo = [bool]($needsPurview -and $Mode -ne 'Wipe')
+$signInCount = 1 + [int]$needsExo + [int]$needsPurview + [int]$needsSpo
 $script:signInNo = 0
 function Show-SignIn([string]$Service, [string]$Why, [string]$Access) {
     $script:signInNo++
@@ -314,7 +315,7 @@ if ($needsPurview) {
     Initialize-Module ExchangeOnlineManagement
     $ippsOk = $false
     try {
-        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'         'Microsoft Purview' ''
+        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'         'Microsoft Purview' $(if ($needsSpo) { 'SharePoint admin center' } else { '' })
         Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true
     }
     catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
@@ -324,7 +325,32 @@ if ($needsPurview) {
         else { throw "Purview sign-in failed: $($_.Exception.Message)" }
     } }
     Write-Host '  Signed in to Microsoft Purview.' -ForegroundColor Green
-    $script:SpoOk = $false
+}
+$script:SpoOk = $false
+$script:SpoToken = $null
+if ($needsSpo) {
+    Show-SignIn 'SharePoint admin center' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: reads and, after you approve, turns on sensitivity label support for SharePoint, OneDrive and PDF files (a tenant setting that belongs to the Purview baseline).' } else { 'DISCOVER mode: only READS whether sensitivity label support is on for SharePoint, OneDrive and PDF files. Nothing is changed.' }) 'SharePoint tenant administration (Global Administrator role)'
+    try {
+        $script:SpoToken = Get-BrowserToken @('AllSites.FullControl') $true '9bc3ab49-b65d-410a-85ad-de819febfddc' $SharePointAdminUrl 'SharePoint admin center' ''
+        $script:SpoOk = $true
+        Write-Host '  Signed in to SharePoint admin center.' -ForegroundColor Green
+    }
+    catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label setting will be a manual step." -ForegroundColor Yellow }
+}
+function Invoke-SpoCsom([string]$Actions, [string]$Paths) {
+    $xml = "<Request AddExpandoFieldTypeSuffix=`"true`" SchemaVersion=`"15.0.0.0`" LibraryVersion=`"16.0.0.0`" ApplicationName=`"ALSO`" xmlns=`"http://schemas.microsoft.com/sharepoint/clientquery/2009`"><Actions>$Actions</Actions><ObjectPaths>$Paths</ObjectPaths></Request>"
+    $resp = Invoke-RestMethod -Method Post -Uri "$SharePointAdminUrl/_vti_bin/client.svc/ProcessQuery" -Headers @{ Authorization = "Bearer $($script:SpoToken)" } -ContentType 'text/xml' -Body $xml -ErrorAction Stop
+    $err = @($resp) | Where-Object { $_.ErrorInfo } | Select-Object -First 1
+    if ($err) { throw $err.ErrorInfo.ErrorMessage }
+    $resp
+}
+$spoTenantPath = '<Constructor Id="1" TypeId="{268004ae-ef6b-4e9b-8425-127220d84719}" />'
+function Get-SpoTenantCsom {
+    $r = Invoke-SpoCsom '<ObjectPath Id="2" ObjectPathId="1" /><Query Id="3" ObjectPathId="1"><Query SelectAllProperties="true"><Properties /></Query></Query>' $spoTenantPath
+    @($r) | Where-Object { $_ -and $_.PSObject.Properties['EnableAIPIntegration'] } | Select-Object -First 1
+}
+function Set-SpoTenantCsom([string]$Name) {
+    [void](Invoke-SpoCsom "<ObjectPath Id=`"2`" ObjectPathId=`"1`" /><SetProperty Id=`"3`" ObjectPathId=`"1`" Name=`"$Name`"><Parameter Type=`"Boolean`">true</Parameter></SetProperty>" $spoTenantPath)
 }
 #endregion
 
@@ -1369,7 +1395,7 @@ function Step-Purview {
             & $addRow $g1 'Unified audit log' $(if ($auOn) { 'On' } else { 'Off' }) 'On' $(if ($auOn) { 'Compliant' } else { 'Drift' }) $auWhy $auLink $false
         }
         else { & $addRow $g1 'Unified audit log' 'Checked by the Unified audit log step' 'On' Info 'Add the AuditLog step to read and enable it.' $auLink $false }        $spoT = $null
-        if ($script:SpoOk) { try { $spoT = Get-SPOTenant -ErrorAction Stop } catch { $spoT = $null } }
+        if ($script:SpoOk) { try { $spoT = Get-SpoTenantCsom } catch { $spoT = $null } }
         if ($spoT) {
             & $addRow $g1 'Sensitivity labels in SharePoint and OneDrive' (& $yn ($spoT.EnableAIPIntegration -eq $true)) 'On' $(if ($spoT.EnableAIPIntegration -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets SharePoint and OneDrive read and apply sensitivity labels (and encrypt labelled files). Without it, labels do not work on files in the cloud.' $spoLink $false
             if ($spoT.PSObject.Properties['EnableSensitivityLabelforPDF']) {
@@ -1570,8 +1596,8 @@ function Step-Purview {
         if ($spoDrift.Count -and (Confirm-Change "Turn on SharePoint/OneDrive sensitivity label support: $(($spoDrift | ForEach-Object { $_.Setting }) -join '; ')")) {
             foreach ($s in $spoDrift) {
                 try {
-                    if ($s.Setting -like '*PDF*') { Set-SPOTenant -EnableSensitivityLabelforPDF $true -ErrorAction Stop }
-                    else { Set-SPOTenant -EnableAIPIntegration $true -ErrorAction Stop }
+                    if ($s.Setting -like '*PDF*') { Set-SpoTenantCsom 'EnableSensitivityLabelforPDF' }
+                    else { Set-SpoTenantCsom 'EnableAIPIntegration' }
                 }
                 catch { Add-Result 'Purview' "Turning on: $($s.Setting)" $_.Exception.Message 'On' Error $spoLink 'SharePoint rejected the change. Turn it on in the SharePoint admin center.' $doc $docText }
             }

@@ -43,4 +43,4 @@ Continue with deeper configuration in the [ALSO Microsoft Security Policy Templa
 
 The logo is copied from the Navigator repository.
 
-Sign-ins: up to three browser sign-ins (Microsoft Graph, Exchange, Purview), each explained before it opens. Enforce ends with a *What happened in this run* summary (changed, failed with reason, not applied, manual steps left). Wipe removes Conditional Access policies, Intune policies, Purview items and the break-glass accounts the script deployed; you choose all, one by one or none per category, and must type WIPE. Tenant-wide settings are not reverted.
+Sign-ins: up to four browser sign-ins (Microsoft Graph, Exchange, Purview, SharePoint), each explained before it opens. Enforce ends with a *What happened in this run* summary (changed, failed with reason, not applied, manual steps left). Wipe removes Conditional Access policies, Intune policies, Purview items and the break-glass accounts the script deployed; you choose all, one by one or none per category, and must type WIPE. Tenant-wide settings are not reverted.
