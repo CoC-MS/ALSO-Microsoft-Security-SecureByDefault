@@ -10,7 +10,7 @@
 <body>
 <header>
   <a class="logo" href="#top" aria-label="ALSO Secure by Default"><img src="also-logo.png" alt="ALSO"><span class="brand-divider"></span><span class="brand-product">Secure by Default Automation Script</span><span class="brand-preview">Public Preview</span></a>
-  <nav><a href="#why">Why</a><a href="#covers">What it covers</a><a href="#how">How it works</a><a href="#start">Get started</a></nav>
+  <nav><a href="#demo">Demo</a><a href="#why">Why</a><a href="#covers">What it covers</a><a href="#how">How it works</a><a href="#start">Get started</a></nav>
   <a class="btn" href="https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault">GitHub</a>
 </header>
 
@@ -24,9 +24,9 @@
 <pre><span class="c"># read-only discovery - nothing is changed</span>
 <span class="b">PS&gt;</span> ./scripts/Invoke-SecureByDefault.ps1
   [<span class="g">Compliant</span>] UnifiedAuditLogIngestionEnabled: True
-  [<span class="y">Drift    </span>] Users can register applications: True (expected False)
-  [<span class="y">Drift    </span>] FIDO2 state: disabled (expected enabled)
-  [<span class="b">Manual   </span>] Intune connection ON -&gt; security.microsoft.com/...
+  [<span class="y">Drift    </span>] Users can register applications: currently 'Yes', should be 'No'
+  [<span class="y">Drift    </span>] Email OTP: currently 'Enabled', should be 'Disabled'
+  [<span class="b">Manual   </span>] Incident email notifications: Cannot be read automatically
 <span class="c"># happy with the report? enforce step by step</span>
 <span class="b">PS&gt;</span> ./scripts/Invoke-SecureByDefault.ps1 -Mode Enforce</pre></div>
   <div class="stats">
@@ -35,6 +35,27 @@
     <div class="stat"><b>2</b><span>break-glass accounts</span></div>
   </div>
 </div>
+
+<section id="flow">
+  <h2 class="reveal">Three steps. About a minute of your time.</h2>
+  <p class="sub reveal">You are just one minute away from a secure baseline.</p>
+  <div class="flow">
+    <div class="flow-step reveal"><span class="n">1</span><h3>Discover</h3><p>Read-only scan of your tenant against the secure reference. Nothing is changed.</p></div>
+    <div class="flow-arrow" aria-hidden="true">&rarr;</div>
+    <div class="flow-step reveal"><span class="n">2</span><h3>Fix</h3><p>Approve each change one by one, or skip it. Every prompt shows the old and new value.</p></div>
+    <div class="flow-arrow" aria-hidden="true">&rarr;</div>
+    <div class="flow-step reveal"><span class="n">3</span><h3>Continue with templates</h3><p>Move on to deeper configuration in the <a href="https://coc-ms.github.io/ALSO-security-policy-templates-navigator/">ALSO Policy Templates Navigator</a>.</p></div>
+  </div>
+</section>
+
+<section id="demo">
+  <h2 class="reveal">See Discover in action</h2>
+  <p class="sub reveal">Sped-up recordings of a discovery run. Tenant details are hidden.</p>
+  <div class="videos">
+    <figure class="reveal"><video controls muted loop playsinline preload="metadata" poster="media/discover-console.jpg"><source src="media/discover-console.mp4" type="video/mp4"></video><figcaption>The script reads your tenant settings and shows what needs a change</figcaption></figure>
+    <figure class="reveal"><video controls muted loop playsinline preload="metadata"><source src="media/discover-report.mp4" type="video/mp4"></video><figcaption>The HTML report opens automatically, grouped by category</figcaption></figure>
+  </div>
+</section>
 
 <section id="why">
   <h2 class="reveal">Why Secure by Default</h2>

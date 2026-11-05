@@ -53,3 +53,12 @@ footer{text-align:center;color:var(--mute);padding:3rem 1rem;border-top:1px soli
 @media(max-width:700px){.brand-product{display:none}}
 
 header{min-height:4.5rem}.logo img{height:auto;width:7rem}.brand-product{font-size:1rem;font-weight:700}.brand-preview{border-color:color-mix(in srgb,#00757d 30%,#dbe1e8);color:#00757d;border-width:1.5px;padding:.25rem .6rem;font-size:.75rem}
+
+.flow{display:flex;align-items:stretch;justify-content:center;gap:1rem;flex-wrap:wrap}
+.flow-step{flex:1 1 240px;max-width:320px;padding:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:16px;text-align:left}
+.flow-step .n{display:inline-flex;width:2rem;height:2rem;align-items:center;justify-content:center;border-radius:50%;background:var(--teal);color:#fff;font-weight:700}
+.flow-step h3{margin:.6rem 0 .3rem}.flow-step p{margin:0;color:var(--mute);font-size:.95rem}
+.flow-arrow{align-self:center;font-size:1.8rem;color:var(--mute)}
+.videos{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.5rem}
+.videos figure{margin:0}.videos video{width:100%;border-radius:14px;border:1px solid var(--border);background:#0f172a;box-shadow:0 12px 30px #0f172a22}
+.videos figcaption{color:var(--mute);font-size:.9rem;margin-top:.6rem;text-align:center}
