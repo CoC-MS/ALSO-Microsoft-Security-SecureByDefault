@@ -99,6 +99,24 @@ function Confirm-Change([string]$Action, [switch]$Always) {
     }
 }
 
+function Select-Deployment($Items, [string]$Noun, [scriptblock]$Name) {
+    $Items = @($Items)
+    if (-not $Items.Count -or $Mode -ne 'Enforce' -or $script:SkipAll) { return @() }
+    if (-not $PSCmdlet.ShouldProcess("Deploy $($Items.Count) $Noun")) { return @() }
+    if ($Force -or $script:ApplyAll) { return $Items }
+    Write-Host ''
+    Write-Host "   $($Items.Count) missing $Noun can be deployed:" -ForegroundColor Yellow
+    $Items | ForEach-Object { Write-Host "     - $(& $Name $_)" }
+    $a = Read-Host '   [a] deploy all  [o] choose one by one  [n] deploy none (default: none)'
+    if ($a -match '^(a|all)$') { return $Items }
+    if ($a -match '^(o|one)$') {
+        $sel = @()
+        foreach ($i in $Items) { if ((Read-Host "   Deploy '$(& $Name $i)'? [y/N]") -match '^(y|yes)$') { $sel += $i } }
+        return $sel
+    }
+    return @()
+}
+
 function Compare-Setting {
     param($Step, $Setting, $Current, $Expected, [scriptblock]$Fix, $Link, $Detail, $Doc, $DocText)
     if ("$Current" -eq "$Expected") { Add-Result $Step $Setting $Current $Expected Compliant $Link $Detail $Doc $DocText; return }
@@ -997,8 +1015,7 @@ function Step-ConditionalAccess {
         catch { Add-Result 'ConditionalAccess' $cn 'Missing' 'Created' Error $link "Could not create it: $($_.Exception.Message)" $doc $docText }
     }
 
-    $do = $false
-    if ($missing.Count) { $do = Confirm-Change "Import $($missing.Count) missing ALSO Conditional Access policies (switched off)" }
+    $selPol = @(Select-Deployment $missing 'ALSO Conditional Access policies (they are imported switched off)' { $_.Name })
     Set-Group 'ALSO baseline policies (one row per policy)'
     if ($skippedE5.Count) { Add-Result 'ConditionalAccess' "ALSO E5 policies not checked ($($skippedE5.Count))" 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'These policies use Entra ID Protection (risk) or Privileged Identity Management features that are only included with Entra ID P2.' $doc $docText }
     foreach ($r in $rows) {
@@ -1008,7 +1025,7 @@ function Step-ConditionalAccess {
             continue
         }
         if ($r.ByCfg) { Add-Result 'ConditionalAccess' $nm "Equivalent policy exists: '$($r.ByCfg.displayName)' ($($stateTxt["$($r.ByCfg.state)"]))" 'Present' Info $link "A policy with a different name but the same settings already covers this ALSO policy, so it is not imported again. Consider renaming it to the ALSO name or keep only one of them." $doc $docText; continue }
-        if (-not $do) { Add-Result 'ConditionalAccess' $nm 'Missing' 'Present (switched off)' Drift $link $why $doc $docText; continue }
+        if ($selPol -notcontains $r) { Add-Result 'ConditionalAccess' $nm 'Missing' 'Present (switched off)' Drift $link $why $doc $docText; continue }
         try {
             $p = $r.P
             $b = ConvertTo-CleanBody $p.Json
@@ -1164,6 +1181,7 @@ function Step-IntunePolicies {
     $link = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview'
     $norm = { param($s) ("$s" -replace '[^\p{L}\p{N}]', '').ToLower() }
     $cache = @{}
+    $known = @()
     $manualBits = @()
     foreach ($pkg in $pk.Keys) {
         $meta = $pk[$pkg]; $doc = $GuideBase + $meta[1]
@@ -1190,20 +1208,34 @@ function Step-IntunePolicies {
             }
             $items += [pscustomobject]@{ Name = $nm; Plat = $plat; Target = $target; Json = $x.Json; ByName = $byName; ByCfg = $byCfg }
         }
+        foreach ($k in $items) { if ($k.ByName) { $known += "$($k.ByName.id)" }; if ($k.ByCfg) { $known += "$($k.ByCfg.id)" } }
         if (-not $items.Count) { continue }
         $miss = @($items | Where-Object { -not $_.ByName -and -not $_.ByCfg })
-        $do = $false
-        if ($miss.Count) { $do = Confirm-Change "Import $($miss.Count) missing policies: $($meta[0])" }
+        $selPol = @(Select-Deployment $miss "missing policies: $($meta[0])" { "$($_.Name) [$($_.Plat)]" })
         $why = 'Policies are created unassigned, so nothing changes on devices yet. Assign each policy to a pilot group, check the results, then widen the scope.'
         foreach ($i in ($items | Sort-Object Name)) {
             $label = "$($i.Name)  [$($i.Plat)]"
             if ($i.ByName) { Add-Result 'IntunePolicies' $label 'Present' 'Present' Compliant $link $why $doc $meta[2]; continue }
             if ($i.ByCfg) { $en = if ($i.ByCfg.displayName) { $i.ByCfg.displayName } else { $i.ByCfg.name }; Add-Result 'IntunePolicies' $label "Equivalent policy exists: '$en'" 'Present' Info $link 'A policy with a different name but the same settings already exists, so this one is not imported again.' $doc $meta[2]; continue }
-            if (-not $do) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link $why $doc $meta[2]; continue }
+            if ($selPol -notcontains $i) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link $why $doc $meta[2]; continue }
             try { Graph POST $i.Target (ConvertTo-CleanBody $i.Json) | Out-Null; Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Fixed $link $why $doc $meta[2] }
             catch { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Error $link "Import failed: $($_.Exception.Message)" $doc $meta[2] }
         }
     }
+    Set-Group 'Your existing Intune policies (already in your tenant)'
+    $seen = @{}
+    $anyEx = $false
+    foreach ($tg in $cache.Keys) {
+        foreach ($ex in $cache[$tg]) {
+            $id = "$($ex.id)"
+            if ($id -in $known -or $seen.ContainsKey($id)) { continue }
+            $seen[$id] = $true; $anyEx = $true
+            $en = if ($ex.displayName) { $ex.displayName } else { $ex.name }
+            $kind = ("$($ex.'@odata.type')" -replace '^#?microsoft\.graph\.', '')
+            Add-Result 'IntunePolicies' "$en" "Existing policy$(if ($kind) { " ($kind)" })" 'Reviewed' Info $link 'This policy already exists in your tenant. It is not part of the ALSO baseline and is not changed by this script. Review it and check that it does not conflict with the ALSO policies.' $GuideBase 'ALSO guide: Endpoints'
+        }
+    }
+    if (-not $anyEx) { Add-Result 'IntunePolicies' 'Other Intune policies' 'None found' 'Reviewed' Info $link 'No other policies of these types exist in your tenant yet.' $GuideBase 'ALSO guide: Endpoints' }
     Set-Group 'Apple and enrollment'
     if ($manualBits.Count) {
         Add-Result 'IntunePolicies' 'Defender for Endpoint macOS app and tenant-specific onboarding files' ($manualBits -join '; ') 'Added by an administrator' Manual 'https://security.microsoft.com/securitysettings/endpoints/onboarding' 'The macOS Defender app is a software package and the macOS onboarding file contains a key that belongs to one tenant. Download the onboarding package from the Defender portal (Settings > Endpoints > Onboarding), then add the app and profile in Intune.' ($GuideBase + '#defender-onboarding') 'ALSO guide: Defender provisioning and onboarding (Endpoints, step 10)'
