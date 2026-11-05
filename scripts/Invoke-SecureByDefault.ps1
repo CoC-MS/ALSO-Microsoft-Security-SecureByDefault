@@ -168,7 +168,7 @@ $graphWhy = if ($Mode -eq 'Enforce') {
 }
 Show-SignIn 'Microsoft Graph (Entra ID, Intune, SharePoint settings)' $graphWhy ($graphScopes -join ', ')
 Write-Host '  First run only: approve the request for the "Microsoft Graph Command Line Tools" enterprise application ("Consent on behalf of your organization").' -ForegroundColor DarkGray
-function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e', [string]$Resource = 'https://graph.microsoft.com') {
+function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e', [string]$Resource = 'https://graph.microsoft.com', [string]$Service = 'Microsoft', [string]$Next = '') {
     $port = Get-Random -Minimum 49200 -Maximum 65000
     $redirect = "http://localhost:$port"
     $b64 = { param([byte[]]$b) [Convert]::ToBase64String($b).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
@@ -204,7 +204,7 @@ function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clie
                 if ($cand -and ($cand['code'] -or $cand['error'])) {
                     $q = $cand
                     $ok = [bool]$q['code']
-                    $msg = if ($ok -and $Last) { 'Signed in. You can close this tab and return to PowerShell.' } elseif ($ok) { 'Signed in. You can close this tab. The next sign-in opens automatically.' } else { 'Sign-in failed. Return to PowerShell for details.' }
+                    $msg = if (-not $ok) { "Sign-in to $Service failed. Return to PowerShell for details." } elseif ($Next) { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>You can close this tab. The next sign-in, <b>$Next</b>, opens in a new browser window in a few seconds." } else { "Signed in to <b>$Service</b> (sign-in $($script:signInNo) of $signInCount).<br>This was the <b>last</b> sign-in. You can close this tab and return to PowerShell." }
                     $body = [Text.Encoding]::UTF8.GetBytes("<html><head><title>ALSO Secure by Default</title></head><body style='font-family:Segoe UI;margin:3em'><h2>ALSO Secure by Default</h2><p>$msg</p></body></html>")
                     $hdr = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
                     $stream.Write($hdr, 0, $hdr.Length); $stream.Write($body, 0, $body.Length); $stream.Flush()
@@ -229,7 +229,8 @@ function Get-BrowserToken([string[]]$Scopes, [bool]$Last = $false, [string]$clie
 
 Write-Host '  Opening your default browser for sign-in...' -ForegroundColor DarkGray
 try {
-    $token = Get-BrowserToken $graphScopes (-not ($needsExo -or $needsPurview))
+    $nextName = if ($needsExo) { 'Exchange Online' } elseif ($needsPurview) { 'Microsoft Purview' } else { '' }
+    $token = Get-BrowserToken $graphScopes $false '14d82eec-204b-4c2f-b7e8-296a70dab67e' 'https://graph.microsoft.com' 'Microsoft Graph (Entra ID, Intune, SharePoint settings)' $nextName
     Connect-MgGraph -AccessToken (ConvertTo-SecureString $token -AsPlainText -Force) -NoWelcome -ErrorAction Stop
 }
 catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message)" }
@@ -251,7 +252,7 @@ if ($needsExo) {
     Initialize-Module ExchangeOnlineManagement
     $exOk = $false
     try {
-        $exTok = Get-BrowserToken @('.default') (-not $needsPurview) 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://outlook.office365.com'
+        $exTok = Get-BrowserToken @('.default') (-not $needsPurview) 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://outlook.office365.com' 'Exchange Online' $(if ($needsPurview) { 'Microsoft Purview' } else { '' })
         Connect-ExchangeOnline -AccessToken $exTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $exOk = $true
     }
     catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
@@ -266,7 +267,7 @@ if ($needsPurview) {
     Initialize-Module ExchangeOnlineManagement
     $ippsOk = $false
     try {
-        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'
+        $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com' 'Microsoft Purview' 'SharePoint Online'
         Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true
     }
     catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
