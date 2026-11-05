@@ -174,6 +174,15 @@ function Step-AuditLog {
     } 'https://purview.microsoft.com/audit/auditsearch'
 }
 
+function YN($v) { if ($v -eq $true) { 'Yes' } elseif ($v -eq $false) { 'No' } else { 'Unknown' } }
+function Cap($s) { if ($s) { "$s".Substring(0, 1).ToUpper() + "$s".Substring(1) } else { 'Unknown' } }
+$script:GuestRoles = @{
+    'a0b1b346-4d3e-4e8b-98f8-753987be4970' = 'Same access as members (most inclusive)'
+    '10dae51f-b6af-4016-8d66-8c2a99b929b3' = 'Limited access to properties and memberships of directory objects (default)'
+    '2af84b1e-32c8-42b7-82bc-daa82404023b' = 'Restricted access to properties and memberships of directory objects (most restrictive)'
+}
+function Get-GuestRoleName($id) { if ($script:GuestRoles.ContainsKey("$id")) { $script:GuestRoles["$id"] } else { "Unknown role ($id)" } }
+
 function Step-UserSettings {
     Write-Step 'Entra user settings & external collaboration' 'Default user permissions and guest restrictions.'
     $ref = $script:Reference.userSettings
@@ -181,30 +190,31 @@ function Step-UserSettings {
     $p = Graph GET $uri
     $d = $p.defaultUserRolePermissions
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/UserSettings'
-    Compare-Setting 'UserSettings' 'Users can register applications' $d.allowedToCreateApps $ref.usersCanRegisterApps { Graph PATCH $uri @{ defaultUserRolePermissions = @{ allowedToCreateApps = $ref.usersCanRegisterApps } } } $link
-    Compare-Setting 'UserSettings' 'Restrict non-admin users from creating tenants' (-not $d.allowedToCreateTenants) $ref.restrictTenantCreation { Graph PATCH $uri @{ defaultUserRolePermissions = @{ allowedToCreateTenants = (-not $ref.restrictTenantCreation) } } } $link
-    Compare-Setting 'UserSettings' 'Users can create security groups' $d.allowedToCreateSecurityGroups $ref.usersCanCreateSecurityGroups { Graph PATCH $uri @{ defaultUserRolePermissions = @{ allowedToCreateSecurityGroups = $ref.usersCanCreateSecurityGroups } } } $link
-    Compare-Setting 'UserSettings' 'Guest user access (guestUserRoleId)' $p.guestUserRoleId $ref.guestUserRoleId { Graph PATCH $uri @{ guestUserRoleId = $ref.guestUserRoleId } } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AllowlistPolicyBlade'
+    Compare-Setting 'UserSettings' 'Users can register applications' (YN $d.allowedToCreateApps) (YN $ref.usersCanRegisterApps) { Graph PATCH $uri @{ defaultUserRolePermissions = @{ allowedToCreateApps = $ref.usersCanRegisterApps } } } $link
+    Compare-Setting 'UserSettings' 'Restrict non-admin users from creating tenants' (YN (-not $d.allowedToCreateTenants)) (YN $ref.restrictTenantCreation) { Graph PATCH $uri @{ defaultUserRolePermissions = @{ allowedToCreateTenants = (-not $ref.restrictTenantCreation) } } } $link
+    Compare-Setting 'UserSettings' 'Users can create security groups' (YN $d.allowedToCreateSecurityGroups) (YN $ref.usersCanCreateSecurityGroups) { Graph PATCH $uri @{ defaultUserRolePermissions = @{ allowedToCreateSecurityGroups = $ref.usersCanCreateSecurityGroups } } } $link
+    Compare-Setting 'UserSettings' 'Guest user access restrictions' (Get-GuestRoleName $p.guestUserRoleId) (Get-GuestRoleName $ref.guestUserRoleId) { Graph PATCH $uri @{ guestUserRoleId = $ref.guestUserRoleId } } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AllowlistPolicyBlade'
     try {
-        $beta = Graph GET 'https://graph.microsoft.com/beta/policies/authorizationPolicy'
+        $buri = 'https://graph.microsoft.com/beta/policies/authorizationPolicy'
+        $beta = Graph GET $buri
         if ($beta.value) { $beta = @($beta.value)[0] }
         $prop = @($beta.defaultUserRolePermissions.Keys) | Where-Object { $_ -match 'agentIdentityBlueprint' } | Select-Object -First 1
         if ($prop) {
-            Compare-Setting 'UserSettings' 'Users can register agent identity blueprints' $beta.defaultUserRolePermissions[$prop] $ref.usersCanRegisterAgentBlueprints {
-                Graph PATCH 'https://graph.microsoft.com/beta/policies/authorizationPolicy' @{ defaultUserRolePermissions = @{ $prop = $ref.usersCanRegisterAgentBlueprints } } } $link
+            Compare-Setting 'UserSettings' 'Users can register agent identity blueprints' (YN $beta.defaultUserRolePermissions[$prop]) (YN $ref.usersCanRegisterAgentBlueprints) {
+                Graph PATCH $buri @{ defaultUserRolePermissions = @{ $prop = $ref.usersCanRegisterAgentBlueprints } } } $link
         }
-        else { Add-Result 'UserSettings' 'Users can register agent identity blueprints' 'not exposed by API' $ref.usersCanRegisterAgentBlueprints Manual $link }
+        else { Add-Result 'UserSettings' 'Users can register agent identity blueprints' 'Not exposed by this tenant API' (YN $ref.usersCanRegisterAgentBlueprints) Manual $link }
     }
-    catch { Add-Result 'UserSettings' 'Users can register agent identity blueprints' "not readable: $($_.Exception.Message)" $ref.usersCanRegisterAgentBlueprints Manual $link }
+    catch { Add-Result 'UserSettings' 'Users can register agent identity blueprints' "Not readable: $($_.Exception.Message)" (YN $ref.usersCanRegisterAgentBlueprints) Manual $link }
     try {
         $ux = 'https://graph.microsoft.com/beta/admin/entra/uxSetting'
         $u = Graph GET $ux
-        Compare-Setting 'UserSettings' 'Restrict access to Microsoft Entra admin center' ($(if ($u.restrictNonAdminAccess) { 'Yes' } else { 'No' })) $ref.restrictAdminCenter {
+        Compare-Setting 'UserSettings' 'Restrict access to Microsoft Entra admin center' (YN $u.restrictNonAdminAccess) $ref.restrictAdminCenter {
             Graph PATCH $ux @{ restrictNonAdminAccess = ($ref.restrictAdminCenter -eq 'Yes') } | Out-Null } $link
     }
-    catch { Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' "not readable: $($_.Exception.Message)" $ref.restrictAdminCenter Manual $link }
-    Add-Result 'UserSettings' 'LinkedIn account connections' 'no Microsoft API exists (portal only)' "$($ref.linkedIn) (business/privacy decision)" Manual $link
-    Add-Result 'UserSettings' 'Show keep user signed in' 'no Microsoft API exists (portal only)' $ref.showKeepSignedIn Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding'
+    catch { Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' "Not readable: $($_.Exception.Message)" $ref.restrictAdminCenter Manual $link }
+    Add-Result 'UserSettings' 'Allow users to connect work or school account with LinkedIn' 'Cannot be read automatically (no Microsoft API)' "$($ref.linkedIn) - business/privacy decision" Manual $link
+    Add-Result 'UserSettings' 'Show keep user signed in' 'Cannot be read automatically (no Microsoft API)' $ref.showKeepSignedIn Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding'
 }
 
 function Step-Consent {
@@ -305,21 +315,32 @@ function Step-Fido2 {
     Write-Step 'Passkey (FIDO2) authentication method' 'Allow phishing-resistant sign-in for all users.'
     $uri = 'https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/fido2'
     $f = Graph GET $uri
-    Compare-Setting 'Fido2' 'FIDO2 state' $f.state 'enabled' {
+    Compare-Setting 'Fido2' 'Passkey (FIDO2)' (Cap $f.state) 'Enabled' {
         Graph PATCH $uri @{ '@odata.type' = '#microsoft.graph.fido2AuthenticationMethodConfiguration'; state = 'enabled'; includeTargets = @(@{ targetType = 'group'; id = 'all_users'; isRegistrationRequired = $false }) }
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods'
 }
 
 function Step-AuthMethods {
-    Write-Step 'Authentication methods review' 'Passwordless first, then phishing-resistant MFA; review weak methods.'
+    Write-Step 'Authentication methods' 'Passwordless first, then phishing-resistant MFA; weak methods off.'
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods'
-    $pol = Graph GET 'https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy'
+    $base = 'https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy'
+    $pol = Graph GET $base
+    $names = @{ Fido2 = 'Passkey (FIDO2)'; MicrosoftAuthenticator = 'Microsoft Authenticator'; Sms = 'SMS'; TemporaryAccessPass = 'Temporary Access Pass'
+        SoftwareOath = 'Third-party software OATH tokens'; Voice = 'Voice call'; Email = 'Email OTP'; X509Certificate = 'Certificate-based authentication'
+        HardwareOath = 'Hardware OATH tokens'; VerifiableCredentials = 'Verified ID'; QRCodePin = 'QR code' }
+    $wanted = @{ Fido2 = 'enabled'; MicrosoftAuthenticator = 'enabled'; TemporaryAccessPass = 'enabled'; Sms = 'disabled'; Voice = 'disabled'; Email = 'disabled' }
     foreach ($m in $pol.authenticationMethodConfigurations) {
-        $weak = $m.id -in 'Sms', 'Voice', 'Email'
-        $status = if ($m.state -eq 'enabled' -and $weak) { 'Drift' } else { 'Info' }
-        Add-Result 'AuthMethods' $m.id $m.state $(if ($weak) { 'disabled/limited' } else { 'review targets' }) $status $link
+        $mid = $m.id
+        if ($mid -eq 'Fido2' -and $Steps -contains 'Fido2') { continue }
+        $label = if ($names.ContainsKey($mid)) { $names[$mid] } else { $mid }
+        if ($wanted.ContainsKey($mid)) {
+            $otype = $m.'@odata.type'
+            $newState = $wanted[$mid]
+            Compare-Setting 'AuthMethods' $label (Cap $m.state) (Cap $newState) { Graph PATCH "$base/authenticationMethodConfigurations/$mid" @{ '@odata.type' = $otype; state = $newState } | Out-Null } $link
+        }
+        else { Add-Result 'AuthMethods' $label (Cap $m.state) 'Review for your organization' Info $link }
     }
-    Add-Result 'AuthMethods' 'Authenticator phone sign-in is not phishing-resistant' 'review' 'use CA authentication strengths' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/AuthStrengths'
+    Add-Result 'AuthMethods' 'Authenticator push is not phishing-resistant' 'Enforce phishing-resistant MFA with Conditional Access authentication strengths' 'Authentication strength policy assigned' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/AuthStrengths'
 }
 
 function Step-SharePoint {
@@ -328,13 +349,21 @@ function Step-SharePoint {
     $t = Graph GET $uri
     $ref = $script:Reference.sharePoint
     $link = "$SharePointAdminUrl/_layouts/15/online/AdminHome.aspx#/sharing"
-    Compare-Setting 'SharePoint' 'External sharing level (sharingCapability)' $t.sharingCapability $ref.sharingCapability {
-        Graph PATCH $uri @{ sharingCapability = ($ref.sharingCapability.Substring(0, 1).ToLower() + $ref.sharingCapability.Substring(1)) } | Out-Null } $link
-    if ($null -ne $t.isRequireAcceptingUserToMatchInvitedUserEnabled) { Compare-Setting 'SharePoint' 'Guests must sign in with the invited account' $t.isRequireAcceptingUserToMatchInvitedUserEnabled 'True' {
-        Graph PATCH $uri @{ isRequireAcceptingUserToMatchInvitedUserEnabled = $true } | Out-Null } $link }
-    if ($null -ne $t.isLegacyAuthProtocolsEnabled) { Compare-Setting 'SharePoint' 'Legacy authentication protocols enabled' $t.isLegacyAuthProtocolsEnabled 'False' {
-        Graph PATCH $uri @{ isLegacyAuthProtocolsEnabled = $false } | Out-Null } $link }
-    Add-Result 'SharePoint' 'Default sharing link type / anonymous link and guest expiry' 'not exposed by Microsoft Graph' 'Direct, expiry 30 days' Manual $link
+    $levels = @{ disabled = 'Only people in your organization (no external sharing)'; existingExternalUserSharingOnly = 'Existing guests only'
+        externalUserSharingOnly = 'New and existing guests (sign-in required)'; externalUserAndGuestSharing = 'Anyone (anonymous links allowed)' }
+    $wantKey = $ref.sharingCapability.Substring(0, 1).ToLower() + $ref.sharingCapability.Substring(1)
+    $curLevel = if ($levels.ContainsKey("$($t.sharingCapability)")) { $levels["$($t.sharingCapability)"] } else { "$($t.sharingCapability)" }
+    Compare-Setting 'SharePoint' 'External sharing level (SharePoint and OneDrive)' $curLevel $levels[$wantKey] { Graph PATCH $uri @{ sharingCapability = $wantKey } | Out-Null } $link
+    if ($null -ne $t.isResharingByExternalUsersEnabled) {
+        Compare-Setting 'SharePoint' 'Guests can share items they do not own' (YN $t.isResharingByExternalUsersEnabled) 'No' { Graph PATCH $uri @{ isResharingByExternalUsersEnabled = $false } | Out-Null } $link
+    }
+    if ($null -ne $t.isRequireAcceptingUserToMatchInvitedUserEnabled) {
+        Compare-Setting 'SharePoint' 'Guests must sign in with the account that was invited' (YN $t.isRequireAcceptingUserToMatchInvitedUserEnabled) 'Yes' { Graph PATCH $uri @{ isRequireAcceptingUserToMatchInvitedUserEnabled = $true } | Out-Null } $link
+    }
+    if ($null -ne $t.isLegacyAuthProtocolsEnabled) {
+        Compare-Setting 'SharePoint' 'Legacy authentication protocols' $(if ($t.isLegacyAuthProtocolsEnabled) { 'Allowed' } else { 'Blocked' }) 'Blocked' { Graph PATCH $uri @{ isLegacyAuthProtocolsEnabled = $false } | Out-Null } $link
+    }
+    Add-Result 'SharePoint' 'Default sharing link type, anonymous link expiry, guest expiry, OneDrive-specific sharing level' 'Cannot be read automatically (not exposed by Microsoft Graph)' 'Specific people link, links expire in 30 days' Manual $link
 }
 
 function Step-IntuneEnrollment {
@@ -342,9 +371,11 @@ function Step-IntuneEnrollment {
     $link = 'https://intune.microsoft.com/#view/Microsoft_AAD_IAM/MdmConfiguration.ReactView'
     $base = 'https://graph.microsoft.com/beta/policies/mobileDeviceManagementPolicies'
     $pol = (Graph GET $base).value | Where-Object { $_.displayName -match 'Intune' } | Select-Object -First 1
-    if (-not $pol) { Add-Result 'IntuneEnrollment' 'MDM policy' 'not found' 'Intune' Manual $link; return }
+    if (-not $pol) { Add-Result 'IntuneEnrollment' 'MDM user scope' 'Intune MDM policy not found' 'Intune' Manual $link; return }
+    $scope = @{ all = 'All users'; selected = 'Selected group'; none = 'None' }
     $want = if ($PilotGroupId) { 'selected' } else { 'all' }
-    Compare-Setting 'IntuneEnrollment' 'MDM user scope' $pol.appliesTo $want {
+    $cur = if ($scope.ContainsKey("$($pol.appliesTo)")) { $scope["$($pol.appliesTo)"] } else { "$($pol.appliesTo)" }
+    Compare-Setting 'IntuneEnrollment' 'Automatic MDM enrollment: user scope' $cur $scope[$want] {
         Graph PATCH "$base/$($pol.id)" @{ appliesTo = $want }
         if ($PilotGroupId) { Graph POST "$base/$($pol.id)/includedGroups/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/beta/groups/$PilotGroupId" } | Out-Null }
     } $link
@@ -355,12 +386,16 @@ function Step-Laps {
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DeviceSettings'
     $uri = 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
     $dr = Graph GET $uri
-    Compare-Setting 'Laps' 'Entra LAPS enabled' $dr.localAdminPassword.isEnabled 'True' { Graph PATCH $uri @{ localAdminPassword = @{ isEnabled = $true } } } $link
-    Compare-Setting 'Laps' 'Global admins added as local admin on join' $dr.azureADJoin.localAdmins.enableGlobalAdmins 'False' {
+    Compare-Setting 'Laps' 'Enable Microsoft Entra Local Administrator Password Solution (LAPS)' (YN $dr.localAdminPassword.isEnabled) 'Yes' { Graph PATCH $uri @{ localAdminPassword = @{ isEnabled = $true } } } $link
+    Compare-Setting 'Laps' 'Global administrators become local admin on Entra-joined devices' (YN $dr.azureADJoin.localAdmins.enableGlobalAdmins) 'No' {
         Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ enableGlobalAdmins = $false } } } } $link
-    Compare-Setting 'Laps' 'Registering user added as local admin' $dr.azureADJoin.localAdmins.registeringUsers.'@odata.type' '#microsoft.graph.noDeviceRegistrationMembership' {
+    $ru = @{ '#microsoft.graph.noDeviceRegistrationMembership' = 'None (registering user is not local admin)'
+        '#microsoft.graph.allDeviceRegistrationMembership' = 'All registering users'
+        '#microsoft.graph.enumeratedDeviceRegistrationMembership' = 'Selected users and groups' }
+    $curType = "$($dr.azureADJoin.localAdmins.registeringUsers.'@odata.type')"
+    $curRu = if ($ru.ContainsKey($curType)) { $ru[$curType] } else { "Unknown ($curType)" }
+    Compare-Setting 'Laps' 'Registering user is added as local administrator on join' $curRu $ru['#microsoft.graph.noDeviceRegistrationMembership'] {
         Graph PATCH $uri @{ azureADJoin = @{ localAdmins = @{ registeringUsers = @{ '@odata.type' = '#microsoft.graph.noDeviceRegistrationMembership' } } } } } $link
-    Add-Result 'Laps' 'Windows LAPS policy deployment' 'manual' 'deployed via Intune' Manual 'https://intune.microsoft.com/#view/Microsoft_Intune_Workflows/SecurityManagementMenu/~/accountprotection'
 }
 
 function Step-MdoPresets {
@@ -368,20 +403,20 @@ function Step-MdoPresets {
     $link = 'https://security.microsoft.com/presetSecurityPolicies'
     $found = $false
     foreach ($kind in 'EOP', 'ATP') {
+        $kindName = if ($kind -eq 'EOP') { 'Exchange Online Protection' } else { 'Defender for Office 365' }
         try { $rules = @(& "Get-${kind}ProtectionPolicyRule" -ErrorAction Stop) }
-        catch { Add-Result 'MdoPresets' "$kind preset rules" "not readable: $($_.Exception.Message)" 'readable' Manual $link; continue }
+        catch { Add-Result 'MdoPresets' "$kindName preset rules" "Not readable: $($_.Exception.Message)" 'Readable' Manual $link; continue }
         foreach ($r in $rules) {
             $found = $true
-            if ($r.Identity -match 'Standard|Strict') {
-                $want = if ($r.Identity -match 'Standard') { 'Enabled' } else { $r.State }
-                Compare-Setting 'MdoPresets' "$kind $($r.Identity) state" $r.State $want { & "Enable-${kind}ProtectionPolicyRule" -Identity $r.Identity } $link
+            if ($r.Identity -match 'Standard') {
+                Compare-Setting 'MdoPresets' "$kindName - $($r.Identity)" (Cap "$($r.State)".ToLower()) 'Enabled' { & "Enable-${kind}ProtectionPolicyRule" -Identity $r.Identity } $link
             }
-            else { Add-Result 'MdoPresets' "$kind $($r.Identity)" $r.State 'review recipients' Info $link }
+            else { Add-Result 'MdoPresets' "$kindName - $($r.Identity)" (Cap "$($r.State)".ToLower()) 'Review recipients' Info $link }
         }
     }
     if (-not $found) {
-        Add-Result 'MdoPresets' 'Standard preset security policy' 'not configured (no preset rules exist)' 'Standard enabled for all recipients' Manual $link
-        Write-Host '   Microsoft only creates the preset rules when you first assign recipients in the Defender portal (Preset security policies > Standard protection > Manage). After that, this script can enable/verify them.' -ForegroundColor DarkGray
+        Add-Result 'MdoPresets' 'Standard preset security policy' 'Not configured' 'Standard preset turned on for all recipients' Manual $link
+        Write-Host '   Microsoft does not allow creating the preset policies through any API or PowerShell cmdlet. Turn Standard protection on once in the Defender portal (Preset security policies > Standard protection > Manage). After that, this script can verify and enable/disable it.' -ForegroundColor DarkGray
     }
 }
 
@@ -391,28 +426,30 @@ function Step-DefenderEndpoint {
     try {
         $skus = (Graph GET 'https://graph.microsoft.com/v1.0/subscribedSkus').value
         $plans = @($skus | Where-Object { $_.capabilityStatus -eq 'Enabled' } | ForEach-Object { $_.servicePlans } | Where-Object { $_.servicePlanName -match 'WINDEFATP|MDE_SMB|MDE_LITE|DEFENDER_ENDPOINT' -and $_.provisioningStatus -eq 'Success' })
-        Add-Result 'DefenderEndpoint' 'Defender for Business/Endpoint licensed and provisioned' $(if ($plans) { 'yes' } else { 'no matching service plan' }) 'yes' $(if ($plans) { 'Compliant' } else { 'Drift' }) 'https://security.microsoft.com/machines?category=all-devices'
+        Compare-Setting 'DefenderEndpoint' 'Defender for Business / Endpoint licensed and provisioned' $(if ($plans) { 'Licensed and provisioned' } else { 'No Defender for Endpoint licence found' }) 'Licensed and provisioned' $null 'https://security.microsoft.com/machines?category=all-devices'
     }
-    catch { Add-Result 'DefenderEndpoint' 'Defender licensing check' "not readable: $($_.Exception.Message)" 'yes' Manual 'https://security.microsoft.com/machines?category=all-devices' }
+    catch { Add-Result 'DefenderEndpoint' 'Defender for Business / Endpoint licensed and provisioned' "Not readable: $($_.Exception.Message)" 'Licensed and provisioned' Manual 'https://security.microsoft.com/machines?category=all-devices' }
     try {
         $c = @((Graph GET 'https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors').value)
-        if (-not $c) { Add-Result 'DefenderEndpoint' 'Intune <-> Defender connection' 'no connector yet' 'enabled' Manual 'https://security.microsoft.com/securitysettings/endpoints/integration'; Write-Host '   Turn on "Microsoft Intune connection" once in the Defender portal (Settings > Endpoints > Advanced features); this creates the connector.' -ForegroundColor DarkGray }
+        if (-not $c) { Add-Result 'DefenderEndpoint' 'Intune connection to Defender for Endpoint' 'No connector exists yet' 'Connected' Manual 'https://security.microsoft.com/securitysettings/endpoints/integration'; Write-Host '   Turn on "Microsoft Intune connection" once in the Defender portal (Settings > Endpoints > Advanced features); this creates the connector, after which this script can verify and enable it.' -ForegroundColor DarkGray }
         foreach ($x in $c) {
             $cid = $x.id
-            Compare-Setting 'DefenderEndpoint' "Intune <-> Defender connection ($cid)" $x.partnerState 'enabled' {
+            $cur = if ($x.partnerState -eq 'enabled') { 'Connected' } else { "Not connected (status: $($x.partnerState))" }
+            Compare-Setting 'DefenderEndpoint' 'Intune connection to Defender for Endpoint' $cur 'Connected' {
                 Graph PATCH "https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors/$cid" @{ partnerState = 'enabled'; windowsEnabled = $true; androidEnabled = $true; iosEnabled = $true; macEnabled = $true; microsoftDefenderForEndpointAttachEnabled = $true } | Out-Null
             } $atp
         }
     }
-    catch { Add-Result 'DefenderEndpoint' 'Intune <-> Defender connection' "not readable: $($_.Exception.Message)" 'enabled' Manual $atp }
+    catch { Add-Result 'DefenderEndpoint' 'Intune connection to Defender for Endpoint' "Not readable: $($_.Exception.Message)" 'Connected' Manual $atp }
 }
 
 function Step-DefenderGuidance {
-    Write-Step 'Defender XDR guidance' 'Items with no supported automation API today.'
-    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' 'portal' 'configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications'
-    Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' 'portal' 'ready' Manual 'https://security.microsoft.com/securitysettings/identities'
-    Add-Result 'DefenderGuidance' 'Defender for Cloud Apps <-> Defender for Endpoint integration' 'portal' 'enabled' Manual 'https://security.microsoft.com/cloudapps/settings?tabid=mdatp'
-    Add-Result 'DefenderGuidance' 'App governance / OAuth app policies' 'portal' 'turned on' Manual 'https://security.microsoft.com/cloudapps/app-governance'
+    Write-Step 'Defender XDR guidance' 'Settings Microsoft offers only in the portal (no public API to read or set them).'
+    $na = 'Cannot be read automatically (no Microsoft API)'
+    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications'
+    Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' $na 'Ready' Manual 'https://security.microsoft.com/securitysettings/identities'
+    Add-Result 'DefenderGuidance' 'Defender for Cloud Apps and Defender for Endpoint integration' $na 'Enabled' Manual 'https://security.microsoft.com/cloudapps/settings?tabid=mdatp'
+    Add-Result 'DefenderGuidance' 'App governance / OAuth app policies' $na 'Turned on' Manual 'https://security.microsoft.com/cloudapps/app-governance'
 }
 #endregion
 
@@ -462,15 +499,19 @@ h2{font-size:1.15rem;display:flex;align-items:center;gap:10px}
 table{border-collapse:collapse;width:100%}th{text-align:left;font-size:.78rem;text-transform:uppercase;color:#5b6b7c;padding:6px 8px;border-bottom:2px solid #e6ebf0}
 td{padding:9px 8px;border-bottom:1px solid #eef2f6;vertical-align:top;font-size:.9rem;word-break:break-word}td.st{white-space:nowrap}
 a{color:#0b5cab;text-decoration:none}a:hover{text-decoration:underline}
+.next{background:#fff;border:1px solid #dde3ea;border-left:5px solid #00757d;border-radius:10px;padding:8px 24px 22px;margin:28px 0}.next p{color:#5b6b7c;max-width:760px}.btn{display:inline-block;background:#0b5cab;color:#fff!important;padding:10px 20px;border-radius:8px;font-weight:600}.btn:hover{text-decoration:none;background:#094a8c}
 .pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.78rem;font-weight:600;color:#fff;background:#9aa7b4}
 .pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
 '@
-$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$($sections -join '')</main></body></html>"
+$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main><div class='cards'>$($cards -join '')</div>$($sections -join '')<div class='next'><h2>Done reviewing these settings? Continue with deeper configuration.</h2><p>Secure by Default sets the tenant-wide prerequisites. Next, use the ALSO Microsoft Security Policy Templates Navigator to choose the policy templates and configuration that fit your licenses and platforms.</p><a class='btn' href='https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' target='_blank'>Open the Navigator &rarr;</a></div></main></body></html>"
 [IO.File]::WriteAllText($html, $page, (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "`nSummary:" -ForegroundColor Cyan
 $script:Results | Group-Object Status | ForEach-Object { Write-Host ("  {0,-10} {1}" -f $_.Name, $_.Count) }
 Write-Host "Reports: $json`n         $html"
+Write-Host "
+Done reviewing? Continue with deeper configuration in the ALSO Policy Templates Navigator:" -ForegroundColor Cyan
+Write-Host '  https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' -ForegroundColor Cyan
 try { Invoke-Item $html } catch { Write-Host "Open the HTML report manually: $html" -ForegroundColor Yellow }
 if ($Mode -eq 'Discover') {
     $driftSteps = @($script:Results | Where-Object Status -eq 'Drift' | Select-Object -ExpandProperty Step -Unique)
