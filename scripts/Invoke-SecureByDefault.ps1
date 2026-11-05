@@ -31,7 +31,7 @@ param(
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
     [string]$PilotGroupId,
-    [string]$BreakGlassGroupName = 'SBD-BreakGlass-Accounts',
+    [string]$BreakGlassGroupName = 'SRV-EA-ACCOUNTS',
     [string]$BreakGlassAuName = 'Identity-Governance-AU',
     [string[]]$AdminConsentReviewerIds,
     [switch]$Force
@@ -56,7 +56,14 @@ function Add-Result {
     param($Step, $Setting, $Current, $Expected, [ValidateSet('Compliant', 'Drift', 'Fixed', 'Manual', 'Info', 'Error', 'Skipped')]$Status, $Link)
     $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link })
     $color = @{ Compliant = 'Green'; Fixed = 'Green'; Drift = 'Yellow'; Manual = 'Cyan'; Info = 'Gray'; Error = 'Red'; Skipped = 'DarkGray' }[$Status]
-    Write-Host ("  [{0,-9}] {1}: {2} (expected {3})" -f $Status, $Setting, $Current, $Expected) -ForegroundColor $color
+    $msg = switch ($Status) {
+        'Compliant' { "${Setting}: $Current" }
+        'Fixed'     { "${Setting}: changed from '$Current' to '$Expected'" }
+        'Drift'     { "${Setting}: currently '$Current', should be '$Expected'" }
+        'Error'     { "${Setting}: could not change from '$Current' to '$Expected'" }
+        default     { "${Setting}: $Current (reference: $Expected)" }
+    }
+    Write-Host ("  [{0,-9}] {1}" -f $Status, $msg) -ForegroundColor $color
     if ($Link -and $Status -in 'Manual', 'Drift') { Write-Host "              -> $Link" -ForegroundColor DarkCyan }
 }
 
@@ -75,7 +82,7 @@ function Confirm-Change([string]$Action) {
 function Compare-Setting {
     param($Step, $Setting, $Current, $Expected, [scriptblock]$Fix, $Link)
     if ("$Current" -eq "$Expected") { Add-Result $Step $Setting $Current $Expected Compliant $Link; return }
-    if ($Fix -and (Confirm-Change "$Setting -> $Expected")) {
+    if ($Fix -and (Confirm-Change "$Setting - change from '$Current' to '$Expected'")) {
         try { & $Fix; Add-Result $Step $Setting $Current $Expected Fixed $Link }
         catch { Add-Result $Step $Setting $Current $Expected Error $Link; Write-Warning $_.Exception.Message }
     }
@@ -301,18 +308,18 @@ function Step-BreakGlass {
             # Shown once on the console only; never written to reports or logs.
             Write-Host "   >>> ONE-TIME PASSWORD for ${upn}: $pw  (store offline now; not shown again)" -ForegroundColor Black -BackgroundColor Yellow
             Remove-Variable pw
-            Add-Result 'BreakGlass' "Account $upn" 'missing' 'created' Fixed $link; $u
+            Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Created' Fixed $link; $u
         }
-        else { Add-Result 'BreakGlass' "Account $upn" 'missing' 'exists' Drift $link }
+        else { Add-Result 'BreakGlass' "Account $upn" 'Does not exist' 'Should exist' Drift $link }
     })
 
     $g = (Graph GET "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$BreakGlassGroupName'").value | Select-Object -First 1
     if (-not $g -and (Confirm-Change "Create security group $BreakGlassGroupName")) {
         $g = Graph POST 'https://graph.microsoft.com/v1.0/groups' @{ displayName = $BreakGlassGroupName; mailNickname = ($BreakGlassGroupName -replace '\W', ''); mailEnabled = $false; securityEnabled = $true; description = 'Emergency access accounts' }
-        Add-Result 'BreakGlass' 'Security group' 'missing' 'created' Fixed $null
+        Add-Result 'BreakGlass' 'Security group' 'Does not exist' 'Created' Fixed $null
     }
     elseif ($g) { Add-Result 'BreakGlass' 'Security group' 'exists' 'exists' Compliant $null }
-    else { Add-Result 'BreakGlass' 'Security group' 'missing' 'exists' Drift $null }
+    else { Add-Result 'BreakGlass' 'Security group' 'Does not exist' 'Should exist' Drift $null }
 
     if ($g) {
         $members = @((Graph GET "https://graph.microsoft.com/v1.0/groups/$($g.id)/members?`$select=id").value.id)
@@ -320,9 +327,9 @@ function Step-BreakGlass {
             if ($u.id -in $members) { continue }
             if (Confirm-Change "Add $($u.userPrincipalName) to $BreakGlassGroupName") {
                 Graph POST "https://graph.microsoft.com/v1.0/groups/$($g.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$($u.id)" } | Out-Null
-                Add-Result 'BreakGlass' "Membership $($u.userPrincipalName)" 'missing' 'member' Fixed $null
+                Add-Result 'BreakGlass' "Membership $($u.userPrincipalName)" 'Not a member' 'Member of the group' Fixed $null
             }
-            else { Add-Result 'BreakGlass' "Membership $($u.userPrincipalName)" 'missing' 'member' Drift $null }
+            else { Add-Result 'BreakGlass' "Membership $($u.userPrincipalName)" 'Not a member' 'Member of the group' Drift $null }
         }
     }
 
@@ -332,27 +339,27 @@ function Step-BreakGlass {
         if ($has) { Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'assigned' 'assigned' Compliant $null; continue }
         if (Confirm-Change "Assign Global Administrator (permanent) to $($u.userPrincipalName)") {
             Graph POST 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments' @{ principalId = $u.id; roleDefinitionId = $gaTemplate; directoryScopeId = '/' } | Out-Null
-            Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'missing' 'assigned' Fixed $null
+            Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'Role not assigned' 'Global Administrator assigned' Fixed $null
         }
-        else { Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'missing' 'assigned' Drift $null }
+        else { Add-Result 'BreakGlass' "Global Admin $($u.userPrincipalName)" 'Role not assigned' 'Global Administrator assigned' Drift $null }
     }
 
     $auLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits'
     $au = (Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$BreakGlassAuName'").value | Select-Object -First 1
     if (-not $au -and (Confirm-Change "Create restricted-management AU $BreakGlassAuName")) {
         $au = Graph POST 'https://graph.microsoft.com/v1.0/directory/administrativeUnits' @{ displayName = $BreakGlassAuName; description = 'Protects emergency access objects'; isMemberManagementRestricted = $true }
-        Add-Result 'BreakGlass' 'Restricted management AU' 'missing' 'created' Fixed $auLink
+        Add-Result 'BreakGlass' 'Restricted management AU' 'Does not exist' 'Created' Fixed $auLink
     }
     elseif ($au) { Compare-Setting 'BreakGlass' 'AU restricted management' $au.isMemberManagementRestricted 'True' $null $auLink }
-    else { Add-Result 'BreakGlass' 'Restricted management AU' 'missing' 'exists' Drift $auLink }
+    else { Add-Result 'BreakGlass' 'Restricted management AU' 'Does not exist' 'Should exist' Drift $auLink }
     if ($au -and $g) {
         $auMembers = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members?`$select=id").value.id)
         if ($g.id -in $auMembers) { Add-Result 'BreakGlass' 'Group in AU' 'yes' 'yes' Compliant $null }
         elseif (Confirm-Change "Add group to AU $BreakGlassAuName") {
             Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/groups/$($g.id)" } | Out-Null
-            Add-Result 'BreakGlass' 'Group in AU' 'no' 'yes' Fixed $null
+            Add-Result 'BreakGlass' 'Group in AU' 'Not in the AU' 'In the AU' Fixed $null
         }
-        else { Add-Result 'BreakGlass' 'Group in AU' 'no' 'yes' Drift $null }
+        else { Add-Result 'BreakGlass' 'Group in AU' 'Not in the AU' 'In the AU' Drift $null }
     }
     Add-Result 'BreakGlass' 'FIDO2 key registration + TAP, CA exclusions, SSPR exclusion, sign-in alert' 'manual' 'done' Manual 'https://learn.microsoft.com/entra/identity/role-based-access-control/security-emergency-access'
 }
