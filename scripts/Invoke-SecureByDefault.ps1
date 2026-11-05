@@ -171,7 +171,7 @@ function Initialize-Module([string]$Name) {
 #region connections
 $graphScopes = if ($Mode -eq 'Wipe') {
     'Policy.ReadWrite.ConditionalAccess', 'Policy.Read.All', 'Application.Read.All', 'Group.ReadWrite.All', 'User.ReadWrite.All',
-    'AdministrativeUnit.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All', 'DeviceManagementConfiguration.ReadWrite.All',
+    'AdministrativeUnit.ReadWrite.All', 'Directory.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'Organization.Read.All', 'DeviceManagementConfiguration.ReadWrite.All',
     'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All'
 }
 elseif ($Mode -eq 'Enforce') {
@@ -630,6 +630,20 @@ function Step-BreakGlass {
         else { Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'No' 'Yes' Drift $auLink 'A restricted management administrative unit makes the break-glass group and accounts editable only by the trusted admins you assign to it.' $BreakGlassPdf $pdf }
     }
     $au = $script:bgAu
+    if ($au) {
+        Invoke-Part 'BreakGlass' 'Administrator of the administrative unit' {
+            $nm = "You ($script:MeUpn) are Groups Administrator and User Administrator of $BreakGlassAuName"
+            $roleLink = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits"
+            $roleWhy = 'Objects inside a restricted management unit can only be changed or deleted by administrators assigned to that unit, even Global Administrators cannot. The account that runs this script is added as Groups Administrator and User Administrator of the unit so that it can manage (and later remove) the protected group and accounts.'
+            $haveAll = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/scopedRoleMembers").value | Where-Object { $_.roleMemberInfo.id -eq $script:MeId -and $_.roleId -in 'fdd7a751-b60b-444a-984c-02652fe8fa1c', 'fe930be7-5e62-47db-91af-98c3a49a38b1' }).Count -ge 2
+            if ($haveAll) { Add-Result 'BreakGlass' $nm 'Yes' 'Yes' Compliant $roleLink $roleWhy }
+            elseif (Confirm-Change "Make $script:MeUpn Groups Administrator and User Administrator of $BreakGlassAuName") {
+                [void](Grant-AuAdmin $au.id)
+                Add-Result 'BreakGlass' $nm 'No' 'Assigned' Fixed $roleLink $roleWhy
+            }
+            else { Add-Result 'BreakGlass' $nm 'No' 'Yes' Drift $roleLink $roleWhy }
+        }
+    }
     if ($au -and $g) {
         Invoke-Part 'BreakGlass' 'Group in administrative unit' {
             $nm = "Group $BreakGlassGroupName is inside administrative unit $BreakGlassAuName"
@@ -1758,6 +1772,18 @@ function Remove-Items([string]$Step, [string]$Noun, $Items, [scriptblock]$Name, 
     }
 }
 
+function Grant-AuAdmin([string]$AuId) {
+    $added = 0
+    foreach ($role in @{ 'Groups Administrator' = 'fdd7a751-b60b-444a-984c-02652fe8fa1c'; 'User Administrator' = 'fe930be7-5e62-47db-91af-98c3a49a38b1' }.GetEnumerator()) {
+        $have = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AuId/scopedRoleMembers").value | Where-Object { $_.roleId -eq $role.Value -and $_.roleMemberInfo.id -eq $script:MeId })
+        if (-not $have.Count) {
+            Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AuId/scopedRoleMembers" @{ roleId = $role.Value; roleMemberInfo = @{ id = $script:MeId } } | Out-Null
+            $added++
+        }
+    }
+    $added
+}
+
 function Remove-FromRestrictedUnit([string]$ObjectId) {
     try {
         $q = [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'")
@@ -1897,6 +1923,15 @@ function Invoke-Wipe {
     if (-not $Force -and -not $WhatIfPreference) {
         if ((Read-Host 'Type WIPE to continue, anything else cancels') -ne 'WIPE') { Write-Host 'Cancelled. Nothing was removed.' -ForegroundColor Green; exit 0 }
     }
+    try {
+        $q0 = [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'")
+        $au0 = (Graph GET ('https://graph.microsoft.com/v1.0/directory/administrativeUnits?$filter=' + $q0)).value | Select-Object -First 1
+        if ($au0 -and -not $WhatIfPreference -and (Grant-AuAdmin $au0.id) -gt 0) {
+            Write-Host "  Added you as Groups Administrator and User Administrator of '$BreakGlassAuName' (needed to delete protected objects). Waiting 45 seconds for it to take effect..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds 45
+        }
+    }
+    catch { Write-Host "  Could not assign you to the restricted management unit: $($_.Exception.Message)" -ForegroundColor Yellow }
     foreach ($s in 'ConditionalAccess', 'IntunePolicies', 'Purview', 'BreakGlass') {
         if ($s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
