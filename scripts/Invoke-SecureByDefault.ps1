@@ -480,17 +480,17 @@ function Step-AuditLog {
         Start-Sleep -Seconds 15
         Write-Host '   Turning on the audit log...' -ForegroundColor DarkGray
         $done = $false; $lastErr = ''
-        foreach ($try in 1..12) {
+        foreach ($try in 1..20) {
             try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $done = $true; break }
             catch {
                 $lastErr = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
                 if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout|server side') { break }
-                Write-Host "   Attempt $try of 12 not accepted yet, retrying in 20 seconds..." -ForegroundColor DarkGray
+                Write-Host "   Attempt $try of 20 not accepted yet. Microsoft is still applying the one-time tenant preparation; retrying in 30 seconds..." -ForegroundColor DarkGray; if ($try -eq 1) { Write-Host "   Microsoft said: $lastErr" -ForegroundColor DarkGray }
                 if ($lastErr -match 'Enable-OrganizationCustomization' -and $try -in 3, 6, 9) { try { Enable-OrganizationCustomization } catch { } }
                 Start-Sleep -Seconds 20
             }
         }
-        if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "Set-AdminAuditLogConfig failed: $lastErr" }
+        if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "Microsoft has not finished preparing this new tenant yet (it can take up to 60 minutes after the first run). Re-run Enforce later, or turn it on at https://purview.microsoft.com/audit (Start recording user and admin activity). Details: $lastErr" }
         $setCmd = Get-Command Set-AdminAuditLogConfig -ErrorAction SilentlyContinue
         $getCmd = if ($setCmd) { Get-Command Get-AdminAuditLogConfig -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -eq $setCmd.Source } | Select-Object -First 1 }
         if (-not $getCmd) { $getCmd = Get-Command Get-AdminAuditLogConfig -ErrorAction SilentlyContinue | Select-Object -First 1 }
