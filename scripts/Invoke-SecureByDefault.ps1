@@ -8,6 +8,7 @@
   each change is confirmed step by step (-Force skips prompts, -WhatIf dry-runs).
 
 
+.PARAMETER IncludeSlowPurviewReads  Also read insider risk and communication compliance policies (can stall on tenants where they are not set up).
 .PARAMETER Mode     Discover (read-only, default), Enforce, or Wipe (removes what this script deployed; asks per category: all, one by one or none).
 .PARAMETER Steps    Subset of step ids. Default: all.
 .PARAMETER SharePointAdminUrl  e.g. https://contoso-admin.sharepoint.com (derived if omitted).
@@ -35,6 +36,7 @@ param(
     [string]$BreakGlassGroupName = 'SRV-EA-ACCOUNTS',
     [string]$BreakGlassAuName = 'Identity-Governance-AU',
     [string[]]$AdminConsentReviewerIds,
+    [switch]$IncludeSlowPurviewReads,
     [switch]$Force
 )
 
@@ -1586,7 +1588,7 @@ function Step-Purview {
             $p = $ret | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             if ($p) {
                 $d = @()
-                $r = @(Get-RetentionComplianceRule -Policy $p.Name -ErrorAction SilentlyContinue) | Select-Object -First 1
+                Write-Host '   ...reading retention rule' -ForegroundColor DarkGray; $r = @(Get-RetentionComplianceRule -Policy $p.Name -ErrorAction SilentlyContinue) | Select-Object -First 1
                 if ($r -and $null -ne $r.RetentionDuration -and "$($r.RetentionDuration)" -ne "$($c.DurationDays)") { $d += "keeps data $($r.RetentionDuration) days, baseline expects $($c.DurationDays)" }
                 if ($r -and $r.RetentionComplianceAction -and "$($r.RetentionComplianceAction)" -ne "$($c.Action)") { $d += "action is $($r.RetentionComplianceAction), baseline expects $($c.Action)" }
                 & $emit $g8 "Optional: $($c.Name)" $true $d 'Keeps Exchange mail for seven years and then deletes it. Optional, only after legal review.' $retL $null
@@ -1599,10 +1601,12 @@ function Step-Purview {
         $g9 = 'Your existing tenant: Other Purview protections'
         $extras = @(
             @{ N = 'Auto-labeling policies'; C = { @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop) }; D = 'Auto-labeling applies labels to content that contains sensitive information, without relying on users.'; L = 'https://purview.microsoft.com/informationprotection/autolabeling' }
-            @{ N = 'Insider risk management policies'; C = { @(Get-InsiderRiskPolicy -ErrorAction Stop) }; D = 'Detects risky activity such as data leaks by departing employees. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/insiderriskmanagement' }
-            @{ N = 'Communication compliance policies'; C = { @(Get-SupervisoryReviewPolicyV2 -ErrorAction Stop) }; D = 'Reviews messages for policy violations. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/communicationcompliance' }
+            @{ N = 'Insider risk management policies'; S = $true; C = { @(Get-InsiderRiskPolicy -ErrorAction Stop) }; D = 'Detects risky activity such as data leaks by departing employees. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/insiderriskmanagement' }
+            @{ N = 'Communication compliance policies'; S = $true; C = { @(Get-SupervisoryReviewPolicyV2 -ErrorAction Stop) }; D = 'Reviews messages for policy violations. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/communicationcompliance' }
         )
         foreach ($x in $extras) {
+            if ($x.S -and -not $IncludeSlowPurviewReads) { & $addRow $g9 $x.N 'Not read in this scan' 'Considered for your organization' Info "$($x.D) It is skipped by default because Microsoft's read command can stall; add -IncludeSlowPurviewReads to read it." $x.L $false; continue }
+            Write-Host "   ...reading $($x.N)" -ForegroundColor DarkGray
             try { $cc = & $x.C; & $addRow $g9 $x.N $(if ($cc.Count) { "$($cc.Count): $(($cc | ForEach-Object { $_.Name }) -join '; ')" } else { 'None' }) 'Considered for your organization' Info $x.D $x.L $false }
             catch { & $addRow $g9 $x.N 'Not available in this tenant or not readable' 'Considered for your organization' Info $x.D $x.L $false }
         }
