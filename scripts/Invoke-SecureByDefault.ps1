@@ -1491,7 +1491,9 @@ function Step-IntunePolicies {
             if ($selPol -notcontains $i) { Add-Result 'IntunePolicies' $label 'Missing' 'Present (unassigned)' Drift $link $why $doc $meta[2]; continue }
             try { Graph POST $i.Target (ConvertTo-CleanBody $i.Json) | Out-Null; Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Fixed $link $why $doc $meta[2] }
             catch {
-                if ($pkg -eq 'defender-onboarding') { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Manual $link "This Defender onboarding profile could not be imported automatically ($($_.Exception.Message)). It usually needs the Defender for Endpoint connection and your tenant's onboarding file first: finish the Defender connection steps, then import it in Intune." $doc $meta[2] }
+                $em = "$($_.Exception.Message)"; $mm = [regex]::Match($em, '"message"\s*:\s*"((?:[^"\\]|\\.)*)"'); $short = if ($mm.Success) { $mm.Groups[1].Value } else { ($em -split "`r?`n")[0] }
+                Write-Host "   Could not import '$($i.Name)': $short" -ForegroundColor Yellow
+                if ($pkg -eq 'defender-onboarding') { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Manual $link "This Defender onboarding profile could not be imported automatically (Microsoft said: $short). It usually needs the Defender for Endpoint connection and your tenant's onboarding file first: finish the Defender connection steps, then import it in Intune." $doc $meta[2] }
                 else { Add-Result 'IntunePolicies' $label 'Missing' 'Imported (unassigned)' Error $link "$($_.Exception.Message)" $doc $meta[2] }
             }
         }
