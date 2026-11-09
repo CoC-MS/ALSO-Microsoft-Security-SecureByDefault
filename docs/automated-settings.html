@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Automated settings - ALSO Secure by Default</title>
+<meta name="description" content="Every tenant setting that ALSO Secure by Default checks and changes automatically in Enforce mode.">
+<link rel="stylesheet" href="style.css">
+<style>
+.page{max-width:1000px;margin:auto;padding:3rem 1.5rem 4rem}
+.page h1{font-size:clamp(2rem,4.5vw,3rem);margin:.2rem 0 .6rem}
+.page .lead{color:var(--mute);font-size:1.05rem;max-width:760px}
+.toc{display:flex;flex-wrap:wrap;gap:.5rem;margin:1.6rem 0 2.4rem}
+.toc a{padding:.3rem .8rem;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text);font-size:.88rem}
+.toc a:hover{border-color:var(--teal);color:var(--teal)}
+.page h2{margin:2.6rem 0 .3rem;font-size:1.5rem;scroll-margin-top:90px}
+.page h2 span{color:var(--teal)}
+.page .note{color:var(--mute);margin:0 0 .8rem;font-size:.95rem}
+table.set{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;font-size:.94rem}
+table.set th,table.set td{text-align:left;padding:.65rem .9rem;border-bottom:1px solid var(--border);vertical-align:top}
+table.set th{background:#eef3f7;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+table.set tr:last-child td{border-bottom:0}
+table.set td:first-child{font-weight:600;width:42%}
+.manual li{margin:.3rem 0}
+@media(max-width:700px){table.set td:first-child{width:auto}}
+</style>
+</head>
+<body>
+<header>
+  <a class="logo" href="index.html" aria-label="ALSO Secure by Default"><img src="also-logo.png" alt="ALSO"><span class="brand-divider"></span><span class="brand-product">Secure by Default Automation Script</span><span class="brand-preview">Public Preview</span></a>
+  <nav><a href="index.html#demo">Demo</a><a href="index.html#why">Why</a><a href="index.html#covers">What it covers</a><a href="automated-settings.html">Automated settings</a><a href="index.html#how">How it works</a><a href="index.html#start">Get started</a></nav>
+  <a class="btn" href="https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault">GitHub</a>
+</header>
+
+<main class="page">
+  <span class="pill">Enforce mode</span>
+  <h1>Automated settings</h1>
+  <p class="lead">This is the complete list of what the script changes for you in <b>Enforce</b> mode. Every change is shown with the current and the new value, and nothing is applied until you approve it. <b>Discover</b> mode only reads these settings and changes nothing.</p>
+
+  <div class="toc">
+    <a href="#audit">Audit log</a><a href="#identity">Users &amp; guests</a><a href="#consent">App consent</a><a href="#breakglass">Break-glass</a><a href="#signin">Sign-in methods</a><a href="#sharepoint">SharePoint &amp; OneDrive</a><a href="#devices">Devices &amp; Intune</a><a href="#defender">Defender</a><a href="#ca">Conditional Access</a><a href="#intune">Intune policies</a><a href="#purview">Purview</a><a href="#wipe">Wipe</a><a href="#manual">Checked, not changed</a>
+  </div>
+
+  <h2 id="audit"><span>1.</span> Unified audit log</h2>
+  <p class="note">Needed for investigations, Defender and Purview.</p>
+  <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
+    <tr><td>Unified audit log ingestion</td><td>Off &rarr; On. On a new tenant it first runs the one-time Exchange tenant preparation, then turns the log on. It can take Microsoft up to 60 minutes before the log shows as On.</td></tr>
+  </table>
+
+  <h2 id="identity"><span>2.</span> Users and guests (Entra)</h2>
+  <p class="note">Default user permissions and guest access, set to the secure reference.</p>
+  <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
+    <tr><td>Users can register applications</td><td>No</td></tr>
+    <tr><td>Users can register agent identity blueprints</td><td>No (when your tenant exposes the setting)</td></tr>
+    <tr><td>Restrict non-admin users from creating tenants</td><td>Yes</td></tr>
+    <tr><td>Users can create security groups</td><td>No</td></tr>
+    <tr><td>Guest user access restrictions</td><td>Limited access to properties and memberships of directory objects</td></tr>
+    <tr><td>Security defaults</td><td>Turned on only when the tenant has no Conditional Access policies, so it is never left without MFA</td></tr>
+  </table>
+
+  <h2 id="consent"><span>3.</span> App consent</h2>
+  <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
+    <tr><td>User consent for apps</td><td>Only apps from verified publishers with low-impact permissions</td></tr>
+    <tr><td>Admin consent request workflow</td><td>Enabled, with reviewers you choose (the account running the script, another account, or both), requests valid for 30 days</td></tr>
+  </table>
+
+  <h2 id="breakglass"><span>4.</span> Break-glass accounts</h2>
+  <p class="note">Existing break-glass accounts are detected and checked first. Missing parts are created.</p>
+  <table class="set"><tr><th>Item</th><th>What the script does</th></tr>
+    <tr><td>Two break-glass accounts</td><td>Creates <code>svr_ea_01</code> and <code>svr_ea_02</code> on your <code>onmicrosoft.com</code> domain with strong generated passwords</td></tr>
+    <tr><td>Global Administrator role</td><td>Assigns the permanent Global Administrator role to both accounts</td></tr>
+    <tr><td>Security group</td><td>Creates the break-glass security group and adds both accounts</td></tr>
+    <tr><td>Restricted management administrative unit</td><td>Creates it with restricted management turned on and puts the group inside</td></tr>
+  </table>
+
+  <h2 id="signin"><span>5.</span> Sign-in methods</h2>
+  <table class="set"><tr><th>Method</th><th>What the script sets</th></tr>
+    <tr><td>Passkey (FIDO2)</td><td>Enabled</td></tr>
+    <tr><td>Microsoft Authenticator</td><td>Enabled</td></tr>
+    <tr><td>Temporary Access Pass</td><td>Enabled</td></tr>
+    <tr><td>SMS</td><td>Disabled</td></tr>
+    <tr><td>Voice call</td><td>Disabled</td></tr>
+    <tr><td>Email one-time passcode</td><td>Disabled</td></tr>
+  </table>
+
+  <h2 id="sharepoint"><span>6.</span> SharePoint and OneDrive sharing</h2>
+  <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
+    <tr><td>External sharing level</td><td>New and existing guests (sign-in required)</td></tr>
+    <tr><td>Guests can share items they do not own</td><td>No</td></tr>
+    <tr><td>Guests must sign in with the account that was invited</td><td>Yes</td></tr>
+    <tr><td>Legacy authentication protocols</td><td>Blocked</td></tr>
+  </table>
+
+  <h2 id="devices"><span>7.</span> Devices and Intune</h2>
+  <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
+    <tr><td>Automatic Intune enrollment (MDM user scope)</td><td>All users, or a pilot group if you give one</td></tr>
+    <tr><td>Microsoft Entra Local Administrator Password Solution (LAPS)</td><td>Enabled</td></tr>
+    <tr><td>Require multifactor authentication to register or join devices (legacy setting)</td><td>No</td></tr>
+    <tr><td>Global administrators become local admin on Entra-joined devices</td><td>No</td></tr>
+    <tr><td>Registering user is added as local administrator on join</td><td>None</td></tr>
+  </table>
+
+  <h2 id="defender"><span>8.</span> Defender</h2>
+  <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
+    <tr><td>Defender for Office 365 Standard and Strict preset protection rules</td><td>Enabled when they exist but are off</td></tr>
+    <tr><td>Intune connection to Defender for Endpoint</td><td>Connected for Windows, Android, iOS and macOS (when the connector exists)</td></tr>
+  </table>
+
+  <h2 id="ca"><span>9.</span> Conditional Access baseline</h2>
+  <p class="note">Deploy all policies at once or one by one.</p>
+  <table class="set"><tr><th>Item</th><th>What the script does</th></tr>
+    <tr><td>ALSO Conditional Access policies</td><td>Imports them switched off, so nothing blocks sign-in until you test and enable each one</td></tr>
+    <tr><td>Groups and authentication contexts the policies need</td><td>Creates the missing ones</td></tr>
+    <tr><td>Break-glass group</td><td>Added as an exclusion to every Conditional Access policy</td></tr>
+    <tr><td>ALSO Conditional Access groups</td><td>Placed inside the restricted management administrative unit</td></tr>
+  </table>
+
+  <h2 id="intune"><span>10.</span> Intune policy baseline</h2>
+  <table class="set"><tr><th>Item</th><th>What the script does</th></tr>
+    <tr><td>Compliance, app protection, BitLocker, local admin rights, Defender and Edge policies</td><td>Imported from ALSO's templates, unassigned, so you decide who gets them</td></tr>
+  </table>
+
+  <h2 id="purview"><span>11.</span> Microsoft Purview</h2>
+  <table class="set"><tr><th>Item</th><th>What the script does</th></tr>
+    <tr><td>Sensitivity labels for Microsoft 365 groups, Teams and sites</td><td>Off &rarr; On</td></tr>
+    <tr><td>Sensitivity labels for SharePoint, OneDrive and PDF files</td><td>Off &rarr; On</td></tr>
+    <tr><td>ALSO Purview baseline</td><td>Creates or updates sensitivity labels, the label policy and DLP policies (DLP starts in simulation mode so nothing is blocked by surprise)</td></tr>
+    <tr><td>7-year Exchange retention policy</td><td>Optional. Only deployed if you explicitly confirm it, because mail is deleted after 7 years</td></tr>
+  </table>
+
+  <h2 id="wipe"><span>12.</span> Wipe: undo what was deployed</h2>
+  <p class="note">Wipe mode lists what was deployed and you choose what to remove. Your own policies, groups and labels are never touched.</p>
+  <table class="set"><tr><th>Area</th><th>What can be removed or set back</th></tr>
+    <tr><td>Break-glass</td><td>The two accounts, their group and the restricted management unit</td></tr>
+    <tr><td>Conditional Access, Intune and Purview</td><td>The ALSO baseline items that Enforce deployed</td></tr>
+    <tr><td>Tenant-wide settings</td><td>User settings, app consent, SharePoint sharing, LAPS and Intune enrollment can be set back to Microsoft defaults</td></tr>
+  </table>
+
+  <h2 id="manual"><span>&bull;</span> Checked, but changed by you</h2>
+  <p class="note">These appear in the report's <b>Manual checks and actions</b> tab with a link to the right place.</p>
+  <ul class="manual">
+    <li>Restrict access to the Microsoft Entra admin center, LinkedIn account connections and "Show keep user signed in" (Microsoft offers no way to set these automatically)</li>
+    <li>SPF, DKIM and DMARC for your domains (recommendations with guide links, never changed)</li>
+    <li>Default sharing link type, link expiry and OneDrive-specific sharing level</li>
+    <li>Reviewing, testing and switching on the imported Conditional Access policies</li>
+    <li>Defender for Identity, Defender for Cloud Apps, incident notifications and access reviews</li>
+  </ul>
+</main>
+<footer>ALSO Secure by Default &middot; Review the reference state against your organization's requirements before enforcing.</footer>
+</body>
+</html>
