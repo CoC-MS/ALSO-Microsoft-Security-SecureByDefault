@@ -184,6 +184,7 @@ function New-StrongPassword {
 }
 
 function Initialize-Module([string]$Name) {
+    if (Get-Module $Name) { return }
     if (-not (Get-Module -ListAvailable $Name)) {
         Write-Host "   Installing module $Name (CurrentUser)..." -ForegroundColor DarkGray
         Install-Module $Name -Scope CurrentUser -Force -AllowClobber
@@ -323,18 +324,13 @@ if (-not $SharePointAdminUrl) { $SharePointAdminUrl = "https://$($initialDomain.
 
 if ($needsExo) {
     Show-SignIn 'Exchange Online / Security & Compliance' $(if ($Mode -eq 'Enforce') { 'ENFORCE mode: turns on the unified audit log and enables Defender for Office 365 preset protection rules, after you approve each change.' } else { 'DISCOVER mode: only READS whether the unified audit log is on and whether Defender for Office 365 preset protection rules are enabled. Nothing is changed.' }) 'Exchange Online administration (Global Administrator role)'
+    Write-Host '  Loading the Exchange module...' -ForegroundColor DarkGray
     Initialize-Module ExchangeOnlineManagement
     $exOk = $false
     try {
         $exTok = Get-BrowserToken @('.default') (-not $needsPurview) 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://outlook.office365.com' 'Exchange Online' $(if ($needsPurview) { 'Microsoft Purview' } else { '' })
-        Connect-ExchangeOnline -AccessToken $exTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $exOk = $true
     }
-    catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
-    if (-not $exOk) {
-        try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
-        catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
-    }
-    Write-Host '  Signed in to Exchange Online.' -ForegroundColor Green
+    catch { $exTok = $null; Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Microsoft's own sign-in window will be used instead." -ForegroundColor DarkGray }
 }
 if ($needsPurview) {
     Show-SignIn 'Microsoft Purview (Security & Compliance)' $(if ($Mode -eq 'Wipe') { 'WIPE mode: finds the ALSO Purview DLP policies, label policy, retention policy and sensitivity labels in your tenant and removes the ones you choose.' } elseif ($Mode -eq 'Enforce') { 'ENFORCE mode: reads your sensitivity labels, label policy, DLP and retention policies, compares them with the ALSO Purview baseline and, after you approve, creates or updates the baseline items (DLP policies start in simulation mode).' } else { 'DISCOVER mode: only READS sensitivity labels, label policies, DLP and retention policies. Nothing is changed.' }) 'Security & Compliance administration (Global Administrator role)'
@@ -342,15 +338,8 @@ if ($needsPurview) {
     $ippsOk = $false
     try {
         $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'         'Microsoft Purview' $(if ($needsSpo) { 'SharePoint admin center' } else { '' })
-        Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true; $script:IppsTok = $ippsTok; $script:IppsOrg = $initialDomain
     }
-    catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
-    if (-not $ippsOk) { try { Connect-IPPSSession -ShowBanner:$false -DisableWAM -ErrorAction Stop }
-    catch {
-        if ($_.Exception.Message -match 'parameter') { try { Connect-IPPSSession -ShowBanner:$false -ErrorAction Stop } catch { throw "Purview sign-in failed: $($_.Exception.Message)" } }
-        else { throw "Purview sign-in failed: $($_.Exception.Message)" }
-    } }
-    Write-Host '  Signed in to Microsoft Purview.' -ForegroundColor Green
+    catch { $ippsTok = $null; Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Microsoft's own sign-in window will be used instead." -ForegroundColor DarkGray }
 }
 $script:SpoOk = $false
 $script:SpoToken = $null
@@ -371,6 +360,35 @@ if ($needsSpo) {
         }
         catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label setting will be a manual step." -ForegroundColor Yellow }
     }
+}
+if ($needsExo -or $needsPurview) {
+    Write-Host ''
+    Write-Host 'All sign-ins are done. Connecting to the Microsoft services now (each takes about 10-20 seconds)...' -ForegroundColor Cyan
+}
+if ($needsExo) {
+    $exOk = $false
+    if ($exTok) {
+        try { Write-Host '  Connecting to Exchange Online...' -ForegroundColor DarkGray; Connect-ExchangeOnline -AccessToken $exTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $exOk = $true }
+        catch { Write-Host "  Direct connection was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
+    }
+    if (-not $exOk) {
+        try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
+        catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
+    }
+    Write-Host '  Connected to Exchange Online.' -ForegroundColor Green
+}
+if ($needsPurview) {
+    $ippsOk = $false
+    if ($ippsTok) {
+        try { Write-Host '  Connecting to Purview...' -ForegroundColor DarkGray; Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true; $script:IppsTok = $ippsTok; $script:IppsOrg = $initialDomain }
+        catch { Write-Host "  Direct connection was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
+    }
+    if (-not $ippsOk) { try { Connect-IPPSSession -ShowBanner:$false -DisableWAM -ErrorAction Stop }
+    catch {
+        if ($_.Exception.Message -match 'parameter') { try { Connect-IPPSSession -ShowBanner:$false -ErrorAction Stop } catch { throw "Purview sign-in failed: $($_.Exception.Message)" } }
+        else { throw "Purview sign-in failed: $($_.Exception.Message)" }
+    } }
+    Write-Host '  Connected to Microsoft Purview.' -ForegroundColor Green
 }
 function Invoke-SpoCsom([string]$Actions, [string]$Paths) {
     $xml = "<Request AddExpandoFieldTypeSuffix=`"true`" SchemaVersion=`"15.0.0.0`" LibraryVersion=`"16.0.0.0`" ApplicationName=`"ALSO`" xmlns=`"http://schemas.microsoft.com/sharepoint/clientquery/2009`"><Actions>$Actions</Actions><ObjectPaths>$Paths</ObjectPaths></Request>"
