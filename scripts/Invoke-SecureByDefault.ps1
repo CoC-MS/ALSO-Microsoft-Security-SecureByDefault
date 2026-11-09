@@ -466,8 +466,8 @@ function Step-AuditLog {
         catch {
             if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
             try { [void](Invoke-ExoRest 'Enable-OrganizationCustomization') } catch { }
-            try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) }
-            catch { throw 'Microsoft is still preparing this new tenant for the change (a one-time step that takes 5-30 minutes) and has been asked to finish it. Run Enforce again later, or press "Start recording user and admin activity" in Microsoft Purview (Audit) once the page lets you.' }
+            $script:AuditPending = $true
+            throw 'Microsoft prepares every new tenant once before this setting can be changed (5-30 minutes). The script has asked Microsoft to do that and tries again automatically after the other steps.'
         }
         $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Connect-ExoNow; $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
@@ -2219,6 +2219,24 @@ foreach ($s in $Steps) {
     Invoke-Safe $s { & "Step-$s" }
 }
 
+if ($script:AuditPending) {
+    Write-Host ''
+    Write-Host 'Finishing the unified audit log (Microsoft was still preparing the new tenant)...' -ForegroundColor Cyan
+    $auDone = $false
+    foreach ($try in 1..60) {
+        try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }); $auDone = $true; break } catch { }
+        Start-Sleep -Seconds 15
+    }
+    $auRes = @($script:Results | Where-Object { $_.Step -eq 'AuditLog' -and $_.Status -eq 'Error' }) | Select-Object -First 1
+    if ($auDone) {
+        Write-Host '  Unified audit log is now on.' -ForegroundColor Green
+        if ($auRes) { $auRes.Status = 'Fixed'; $auRes.Detail = 'Switched on after Microsoft finished preparing the new tenant.' }
+    }
+    else {
+        Write-Host '  Microsoft is still preparing the tenant. Run Enforce again later.' -ForegroundColor Yellow
+        if ($auRes) { $auRes.Detail = 'Microsoft is still preparing this new tenant (it can take up to 30 minutes). Run Enforce again later, or press "Start recording user and admin activity" in Microsoft Purview (Audit).' }
+    }
+}
 #region report
 New-Item -ItemType Directory -Force $OutputPath | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
