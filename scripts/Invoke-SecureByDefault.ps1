@@ -124,7 +124,7 @@ function Compare-Setting {
     if ("$Current" -eq "$Expected") { Add-Result $Step $Setting $Current $Expected Compliant $Link $Detail $Doc $DocText; return }
     if ($Fix -and (Confirm-Change "$Setting - change from '$Current' to '$Expected'")) {
         try { & $Fix; Add-Result $Step $Setting $Current $Expected Fixed $Link $Detail $Doc $DocText }
-        catch { Add-Result $Step $Setting $Current $Expected Error $Link "$($_.Exception.Message)" $Doc $DocText }
+        catch { $em = "$($_.Exception.Message)"; if ($em -like 'MANUAL:*') { Add-Result $Step $Setting $Current $Expected Manual $Link $em.Substring(7).Trim() $Doc $DocText } else { Add-Result $Step $Setting $Current $Expected Error $Link $em $Doc $DocText } }
     }
     else { Add-Result $Step $Setting $Current $Expected Drift $Link $Detail $Doc $DocText }
 }
@@ -479,18 +479,19 @@ function Step-AuditLog {
         }
         Start-Sleep -Seconds 15
         Write-Host '   Turning on the audit log...' -ForegroundColor DarkGray
-        $done = $false; $lastErr = ''
+        $done = $false; $skip = $false; $lastErr = ''
+        Write-Host '   Press S at any time to skip and turn it on manually instead.' -ForegroundColor Cyan
         foreach ($try in 1..20) {
-            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $done = $true; break }
+            if ($skip) { break }; try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $done = $true; break }
             catch {
                 $lastErr = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
                 if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout|server side') { break }
                 Write-Host "   Attempt $try of 20 not accepted yet. Microsoft is still applying the one-time tenant preparation; retrying in 30 seconds..." -ForegroundColor DarkGray; if ($try -eq 1) { Write-Host "   Microsoft said: $lastErr" -ForegroundColor DarkGray }
                 if ($lastErr -match 'Enable-OrganizationCustomization' -and $try -in 3, 6, 9) { try { Enable-OrganizationCustomization } catch { } }
-                Start-Sleep -Seconds 30
+                for ($s = 0; $s -lt 30 -and -not $skip; $s++) { Start-Sleep -Seconds 1; if ([Console]::KeyAvailable -and [Console]::ReadKey($true).Key -eq 'S') { $skip = $true } }
             }
         }
-        if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "Microsoft has not finished preparing this new tenant yet (it can take up to 60 minutes after the first run). Re-run Enforce later, or turn it on at https://purview.microsoft.com/audit (Start recording user and admin activity). Details: $lastErr" }
+        if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "MANUAL: Skipped or not ready yet. Turn it on manually at https://purview.microsoft.com/audit (click Start recording user and admin activity), or run: Connect-ExchangeOnline; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled `$true. Microsoft can take up to 60 minutes on a new tenant. Last message: $lastErr" }
         $setCmd = Get-Command Set-AdminAuditLogConfig -ErrorAction SilentlyContinue
         $getCmd = if ($setCmd) { Get-Command Get-AdminAuditLogConfig -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -eq $setCmd.Source } | Select-Object -First 1 }
         if (-not $getCmd) { $getCmd = Get-Command Get-AdminAuditLogConfig -ErrorAction SilentlyContinue | Select-Object -First 1 }
