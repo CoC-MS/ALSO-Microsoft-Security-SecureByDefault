@@ -487,7 +487,7 @@ function Step-AuditLog {
                 if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout|server side') { break }
                 Write-Host "   Attempt $try of 20 not accepted yet. Microsoft is still applying the one-time tenant preparation; retrying in 30 seconds..." -ForegroundColor DarkGray; if ($try -eq 1) { Write-Host "   Microsoft said: $lastErr" -ForegroundColor DarkGray }
                 if ($lastErr -match 'Enable-OrganizationCustomization' -and $try -in 3, 6, 9) { try { Enable-OrganizationCustomization } catch { } }
-                Start-Sleep -Seconds 20
+                Start-Sleep -Seconds 30
             }
         }
         if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "Microsoft has not finished preparing this new tenant yet (it can take up to 60 minutes after the first run). Re-run Enforce later, or turn it on at https://purview.microsoft.com/audit (Start recording user and admin activity). Details: $lastErr" }
