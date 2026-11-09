@@ -465,14 +465,25 @@ function Step-AuditLog {
         try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
         catch {
             if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
-            Write-Host '   Exchange needs "organization customization" turned on first. Doing that now (can take a minute)...' -ForegroundColor DarkGray
-            Connect-ExoNow; Enable-OrganizationCustomization -ErrorAction Stop
-            $done = $false
-            foreach ($try in 1..6) {
-                try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break }
-                catch { Start-Sleep -Seconds 10 }
+            Write-Host '   Exchange needs "organization customization" turned on once for this tenant. Microsoft does this in the background and it can take 5-15 minutes the first time.' -ForegroundColor DarkGray
+            Write-Host '   Starting it now. Nothing is stuck while you see the waiting lines below.' -ForegroundColor DarkGray
+            try { [void](Invoke-ExoRest 'Enable-OrganizationCustomization') }
+            catch {
+                $em = "$($_.Exception.Message)"
+                if ($em -match 'already|is not dehydrated|no need') { }
+                elseif ($em -match 'timed out|timeout|canceled') { Write-Host '   Microsoft is still working on it - waiting.' -ForegroundColor DarkGray }
+                else { try { Connect-ExoNow; Enable-OrganizationCustomization -ErrorAction Stop } catch { if ("$($_.Exception.Message)" -notmatch 'already|no need') { throw } } }
             }
-            if (-not $done) { throw 'Organization customization is still being enabled. Run the script again in a few minutes.' }
+            $done = $false
+            foreach ($try in 1..45) {
+                try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }); $done = $true; break }
+                catch {
+                    if ($try -eq 45) { break }
+                    Write-Host "   Still waiting for Exchange (check $try of 45, next check in 20 seconds)..." -ForegroundColor DarkGray
+                    Start-Sleep -Seconds 20
+                }
+            }
+            if (-not $done) { throw 'Organization customization is still being enabled by Microsoft. Run the script again in about 15 minutes; the audit log is then switched on immediately.' }
         }
         $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Connect-ExoNow; $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
@@ -954,16 +965,27 @@ function Step-MdoPresets {
 }
 
 function Get-DnsRecords([string]$Name, [string]$Type) {
-    try {
-        $r = Invoke-RestMethod -Uri "https://dns.google/resolve?name=$Name&type=$Type" -TimeoutSec 10 -ErrorAction Stop
-        @($r.Answer | Where-Object { $_.data } | ForEach-Object { ("$($_.data)").Trim('"') -replace '"\s*"', '' })
+    $answers = $null
+    if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+        try {
+            $r = @(Resolve-DnsName -Name $Name -Type $Type -DnsOnly -QuickTimeout -ErrorAction Stop)
+            $answers = @($r | ForEach-Object { if ($_.Strings) { $_.Strings -join '' } elseif ($_.NameHost) { "$($_.NameHost)" } } | Where-Object { $_ })
+            return $answers
+        }
+        catch { if ("$($_.Exception.Message)" -match 'does not exist|DNS name does not exist|No records') { return @() } }
     }
-    catch { $null }
+    foreach ($u in "https://cloudflare-dns.com/dns-query?name=$Name&type=$Type", "https://dns.google/resolve?name=$Name&type=$Type", "https://dns.quad9.net:5053/dns-query?name=$Name&type=$Type") {
+        try {
+            $r = Invoke-RestMethod -Uri $u -Headers @{ Accept = 'application/dns-json' } -TimeoutSec 8 -ErrorAction Stop
+            return @($r.Answer | Where-Object { $_.data } | ForEach-Object { ("$($_.data)").Trim('"') -replace '"\s*"', '' })
+        }
+        catch { }
+    }
+    $null
 }
-
 function Step-EmailAuth {
     Write-Step 'Email authentication (SPF, DKIM, DMARC)' 'Looks up the public DNS records of your domains. Recommendations only - nothing is changed.'
-    $link = 'https://security.microsoft.com/authentication'
+    $link = 'https://admin.cloud.microsoft/?#/Domains'
     $doc = $GuideBase + '#email-authentication'; $docText = 'ALSO guide: SPF, DKIM and DMARC (Email, apps and collaboration, step 2)'
     $domains = @((Graph GET 'https://graph.microsoft.com/v1.0/domains').value | Where-Object { $_.isVerified -and $_.name -notlike '*.onmicrosoft.com' -and $_.supportedServices -contains 'Email' })
     if (-not $domains.Count) {
@@ -974,7 +996,7 @@ function Step-EmailAuth {
         $n = $d.name
         Set-Group "Domain: $n"
         $txt = Get-DnsRecords $n 'TXT'
-        if ($null -eq $txt) { Add-Result 'EmailAuth' "$n - DNS lookup" 'Could not be looked up from this computer' 'Records readable' Manual $link 'The public DNS lookup failed (no internet access to dns.google or a proxy blocks it). Check SPF, DKIM and DMARC for this domain by hand.' $doc $docText; continue }
+        if ($null -eq $txt) { Add-Result 'EmailAuth' "$n - DNS lookup" 'Could not be looked up from this computer' 'Records readable' Manual $link 'The public DNS lookup failed (no internet access to public DNS or a firewall blocks it). Check SPF, DKIM and DMARC for this domain by hand.' $doc $docText; continue }
         $spf = @($txt | Where-Object { $_ -match '^v=spf1' })
         if (-not $spf.Count) { Add-Result 'EmailAuth' "$n - SPF" 'No SPF record' 'One SPF record that includes spf.protection.outlook.com' Manual $link 'SPF lists the servers allowed to send mail for your domain. Recommended record: v=spf1 include:spf.protection.outlook.com -all. Publish it as a TXT record at your DNS provider.' $doc $docText }
         elseif ($spf.Count -gt 1) { Add-Result 'EmailAuth' "$n - SPF" "$($spf.Count) SPF records" 'Exactly one SPF record' Manual $link 'A domain must have only one SPF record; with several, receivers treat SPF as failed. Merge them into one.' $doc $docText }
