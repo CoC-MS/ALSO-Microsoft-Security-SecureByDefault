@@ -472,20 +472,20 @@ function Step-AuditLog {
         $oc = $null; try { $oc = Get-OrganizationConfig -ErrorAction Stop } catch { }
         if ($oc -and $oc.IsDehydrated) { & $hydrate; $hydrated = $true } else { $hydrated = $false }
         $ok = $false
-        $ErrorActionPreference = 'Stop'
+        $prevEap = $global:ErrorActionPreference; $global:ErrorActionPreference = 'Stop'
         foreach ($try in 1..3) {
             try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $ok = $true; break }
             catch {
                 $m = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
                 if (-not $hydrated -and $m -match 'Enable-OrganizationCustomization') { & $hydrate; $hydrated = $true; continue }
-                if ($try -eq 3) { throw "Set-AdminAuditLogConfig failed: $m" }
+                if ($try -eq 3) { $global:ErrorActionPreference = $prevEap; throw "Set-AdminAuditLogConfig failed: $m" }
                 Start-Sleep -Seconds 10
             }
         }
         $setCmd = Get-Command Set-AdminAuditLogConfig -ErrorAction SilentlyContinue
         $getCmd = if ($setCmd) { Get-Command Get-AdminAuditLogConfig -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -eq $setCmd.Source } | Select-Object -First 1 }
         if (-not $getCmd) { $getCmd = Get-Command Get-AdminAuditLogConfig -ErrorAction SilentlyContinue | Select-Object -First 1 }
-        $ErrorActionPreference = 'Continue'
+        $global:ErrorActionPreference = $prevEap
         foreach ($va in 1..5) {
             try { if ((& $getCmd -ErrorAction Stop).UnifiedAuditLogIngestionEnabled) { return } } catch { }
             if ($va -lt 5) { Start-Sleep -Seconds 5 }
@@ -1862,7 +1862,7 @@ function Step-Purview {
                 $run = {
                     param($Name, $Body)
                     $sw = [Diagnostics.Stopwatch]::StartNew()
-                    $ErrorActionPreference = 'Continue'
+                    $global:ErrorActionPreference = $prevEap
                     try {
                         $err = @()
                         & $Body 2>&1 3>$null | ForEach-Object { if ($_ -is [Management.Automation.ErrorRecord]) { $err += $_.Exception.Message; Write-Host "      ! $($_.Exception.Message)" -ForegroundColor Yellow } else { $_ } }
