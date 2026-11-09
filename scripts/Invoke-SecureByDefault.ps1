@@ -219,7 +219,7 @@ if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be cha
 
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool](($Mode -ne 'Wipe') -and ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }))
-$needsPurview = [bool]($Steps -contains 'Purview')
+$needsPurview = [bool]($Steps -contains 'Purview' -or ($Mode -eq 'Enforce' -and $Steps -contains 'AuditLog'))
 $needsSpo = [bool]($needsPurview -and $Mode -ne 'Wipe')
 $signInCount = 1 + [int]$needsExo + [int]$needsPurview + [int]$needsSpo
 $script:signInNo = 0
@@ -465,36 +465,9 @@ function Step-AuditLog {
         try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
         catch {
             if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
-            Write-Host '   Exchange needs "organization customization" turned on once for this tenant. Microsoft does this in the background and it can take 5-15 minutes the first time.' -ForegroundColor DarkGray
-            Write-Host '   Starting it now. Nothing is stuck while you see the waiting lines below.' -ForegroundColor DarkGray
-            $dehy = $null; try { $dehy = (Invoke-ExoRest 'Get-OrganizationConfig' | Select-Object -First 1).IsDehydrated } catch { }
-            if ($dehy -ne $false) {
-                try { [void](Invoke-ExoRest 'Enable-OrganizationCustomization') }
-                catch {
-                    $em = "$($_.Exception.Message)"
-                    if ($em -match 'timed out|timeout|canceled') { Write-Host '   Microsoft is working on it - waiting.' -ForegroundColor DarkGray }
-                    else {
-                        Write-Host "   Direct start did not work ($em). Starting it through the Exchange module..." -ForegroundColor DarkGray
-                        try { Connect-ExoNow; Enable-OrganizationCustomization -ErrorAction Stop } catch { if ("$($_.Exception.Message)" -notmatch 'already|no need') { throw "Could not start organization customization: $($_.Exception.Message)" } }
-                    }
-                }
-            }
-            $done = $false; $lastErr = ''
-            foreach ($try in 1..45) {
-                $dehy = $null; try { $dehy = (Invoke-ExoRest 'Get-OrganizationConfig' | Select-Object -First 1).IsDehydrated } catch { }
-                if ($dehy -ne $true) {
-                    try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }); $done = $true; break }
-                    catch {
-                        $lastErr = "$($_.Exception.Message)"
-                        try { Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break } catch { $lastErr = "$($_.Exception.Message)" }
-                    }
-                }
-                if ($try -eq 45) { break }
-                $state = if ($dehy -eq $true) { 'Microsoft is still preparing the tenant' } elseif ($lastErr) { "last answer: $($lastErr.Substring(0, [Math]::Min(150, $lastErr.Length)))" } else { 'waiting' }
-                Write-Host "   Check $try of 45 - $state. Next check in 20 seconds..." -ForegroundColor DarkGray
-                Start-Sleep -Seconds 20
-            }
-            if (-not $done) { throw "The audit log could not be switched on yet. $(if ($lastErr) { "Last answer from Microsoft: $lastErr " })If the tenant is brand new, run the script again in about 30 minutes, or press 'Start recording user and admin activity' in Microsoft Purview (Audit)." }
+            Write-Host '   Exchange has not been prepared for changes yet (new tenant). Switching it on through Microsoft Purview instead, the same way the Purview "Start recording" button does...' -ForegroundColor DarkGray
+            try { [void](Invoke-Timed 'Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop' 90) }
+            catch { throw "The audit log could not be switched on through Purview: $($_.Exception.Message). Press 'Start recording user and admin activity' in Microsoft Purview (Audit) once; a brand new tenant can need up to 30 minutes first." }
         }
         $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Connect-ExoNow; $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
