@@ -1319,8 +1319,8 @@ foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group $
             $u = $b['conditions']['users']
             foreach ($k in 'includeGroups', 'excludeGroups') { if ($u.Contains($k)) { $u[$k] = [object[]]@(@($u[$k]) | ForEach-Object { $map["$_"] } | Where-Object { $_ }) } }
             if ($bgId) {
-                $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
-                if ($bgId -notin $ex) { $u['excludeGroups'] = [object[]]($ex + $bgId) }
+                $ex = @(if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) })
+                if ($bgId -notin $ex) { $u['excludeGroups'] = [object[]](@($ex) + @($bgId) | Select-Object -Unique) }
             }
             $as = $p.Json.grantControls.authenticationStrength
             if ($as -and $b['grantControls']) { $b['grantControls']['authenticationStrength'] = [ordered]@{ id = $as.id } }
@@ -1340,8 +1340,8 @@ foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group $
         Compare-Setting 'ConditionalAccess' "Break-glass group '$BreakGlassGroupName' excluded from all Conditional Access policies" "$($cur.Count - $need.Count) of $($cur.Count) policies exclude it" "$($cur.Count) of $($cur.Count) policies exclude it" {
             foreach ($pol in $need) {
                 $u = ConvertTo-CleanBody $pol.conditions.users $false
-                $ex = if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) } else { @() }
-                $u['excludeGroups'] = [object[]]($ex + $bgId)
+                $ex = @(if ($u.Contains('excludeGroups')) { @($u['excludeGroups']) })
+                $u['excludeGroups'] = [object[]](@($ex) + @($bgId) | Select-Object -Unique)
                 Graph PATCH "$caBase/$($pol.id)" @{ conditions = @{ users = $u } } | Out-Null
             }
         } $link $detail $BreakGlassPdf 'Break-glass best practices (PDF)'
