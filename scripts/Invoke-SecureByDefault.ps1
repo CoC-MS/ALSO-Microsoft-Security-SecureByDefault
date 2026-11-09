@@ -462,7 +462,10 @@ function Step-AuditLog {
     try { $cfg = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Write-Host "   Direct read did not work ($($_.Exception.Message)); using the Exchange module." -ForegroundColor DarkGray }
     if (-not $cfg) { Connect-ExoNow; $cfg = Get-AdminAuditLogConfig }
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
-        Connect-ExoNow
+        Write-Host '   Connecting to Exchange Online with Microsoft''s own sign-in window (same method as the Purview toolkit). Sign in with your Global Administrator account.' -ForegroundColor Cyan
+        try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop
+        $script:ExoConnected = $true
         $prevEap = $global:ErrorActionPreference; $global:ErrorActionPreference = 'Stop'
         Write-Step 'Tenant preparation' 'One-time Exchange setup (Enable-OrganizationCustomization). New tenants need this before the audit log can be changed.'
         $oc = $null; try { $oc = Get-OrganizationConfig } catch { }
@@ -478,7 +481,7 @@ function Step-AuditLog {
         Write-Host '   Turning on the audit log...' -ForegroundColor DarkGray
         $done = $false; $lastErr = ''
         foreach ($try in 1..12) {
-            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break }
+            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $done = $true; break }
             catch {
                 $lastErr = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
                 if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout|server side') { break }
