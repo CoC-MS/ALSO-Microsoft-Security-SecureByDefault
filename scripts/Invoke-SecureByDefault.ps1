@@ -219,7 +219,7 @@ if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be cha
 
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool](($Mode -ne 'Wipe') -and ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }))
-$needsPurview = [bool]($Steps -contains 'Purview' -or ($Mode -eq 'Enforce' -and $Steps -contains 'AuditLog'))
+$needsPurview = [bool]($Steps -contains 'Purview')
 $needsSpo = [bool]($needsPurview -and $Mode -ne 'Wipe')
 $signInCount = 1 + [int]$needsExo + [int]$needsPurview + [int]$needsSpo
 $script:signInNo = 0
@@ -465,9 +465,9 @@ function Step-AuditLog {
         try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
         catch {
             if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
-            Write-Host '   Exchange has not been prepared for changes yet (new tenant). Switching it on through Microsoft Purview instead, the same way the Purview "Start recording" button does...' -ForegroundColor DarkGray
-            try { [void](Invoke-Timed 'Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop' 90) }
-            catch { throw "The audit log could not be switched on through Purview: $($_.Exception.Message). Press 'Start recording user and admin activity' in Microsoft Purview (Audit) once; a brand new tenant can need up to 30 minutes first." }
+            try { [void](Invoke-ExoRest 'Enable-OrganizationCustomization') } catch { }
+            try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) }
+            catch { throw 'Microsoft is still preparing this new tenant for the change (a one-time step that takes 5-30 minutes) and has been asked to finish it. Run Enforce again later, or press "Start recording user and admin activity" in Microsoft Purview (Audit) once the page lets you.' }
         }
         $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Connect-ExoNow; $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
