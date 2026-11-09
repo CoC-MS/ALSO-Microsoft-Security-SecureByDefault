@@ -1198,6 +1198,21 @@ function Step-ConditionalAccess {
     try { foreach ($c0 in @(Get-AllPages 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences')) { $haveCtx["$($c0.id)"] = $true } } catch { }
     $needCtx = @($ctxFiles | Where-Object { -not $haveCtx.ContainsKey("$($_.Json.id)") })
 
+    Set-Group 'Your other Conditional Access policies'
+    $known = @($rows | ForEach-Object { $_.ByName.id; $_.ByCfg.id } | Where-Object { $_ })
+    foreach ($e in $existing) {
+        if ("$($e.id)" -in $known) { continue }
+        Add-Result 'ConditionalAccess' "$($e.displayName)" "Existing policy, not part of the ALSO baseline - $($stateTxt["$($e.state)"])" 'Reviewed' Info $link 'This policy already exists in your tenant. It was created by you or someone else and is not changed by this script. Review it and check that it does not conflict with the ALSO baseline.' $doc $docText
+    }
+
+    Set-Group 'Duplicate policies'
+    $strict = @{}
+    foreach ($e in $existing) { $k = Get-CaFingerprint $e $true; if (-not $strict.ContainsKey($k)) { $strict[$k] = @() }; $strict[$k] += $e }
+    $dups = @($strict.Values | Where-Object { $_.Count -gt 1 })
+    if (-not $dups.Count) { Add-Result 'ConditionalAccess' 'Policies with identical settings' 'No duplicates found' 'No duplicates' Compliant $link 'Checked all existing policies and none of them repeat another policy''s users, apps and controls. For reference, two policies with the same users, apps and controls do the same job twice and make troubleshooting harder.' $doc $docText }
+    $dn = 0
+foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group ${dn}: $($d.Count) policies do the same thing" "Identical settings in:`n$(($d | ForEach-Object { '- ' + $_.displayName }) -join "`n")" 'One policy' Drift $link 'These policies target the same users and apps and require the same controls. Keep one and remove or merge the others, otherwise changes have to be made twice and the result is hard to explain.' $doc $docText }
+
     Set-Group 'Groups and authentication contexts used by the ALSO policies'
     $grpWhy = 'Some ALSO Conditional Access policies include or exclude specific groups (for example admins, service accounts or exclusions). The policies need these groups to exist; they are created empty and you add the members.'
     $ctxWhy = 'Authentication contexts let a policy apply to a sensitive action, for example activating a Tier 0 role. The ALSO policies that refer to them only work when the contexts exist.'
@@ -1261,21 +1276,6 @@ function Step-ConditionalAccess {
         }
         catch { Add-Result 'ConditionalAccess' $nm 'Missing' 'Imported (switched off)' Error $link "Import failed: $($_.Exception.Message)" $doc $docText }
     }
-
-    Set-Group 'Your other Conditional Access policies'
-    $known = @($rows | ForEach-Object { $_.ByName.id; $_.ByCfg.id } | Where-Object { $_ })
-    foreach ($e in $existing) {
-        if ("$($e.id)" -in $known) { continue }
-        Add-Result 'ConditionalAccess' "$($e.displayName)" "Existing policy, not part of the ALSO baseline - $($stateTxt["$($e.state)"])" 'Reviewed' Info $link 'This policy already exists in your tenant. It was created by you or someone else and is not changed by this script. Review it and check that it does not conflict with the ALSO baseline.' $doc $docText
-    }
-
-    Set-Group 'Duplicate policies'
-    $strict = @{}
-    foreach ($e in $existing) { $k = Get-CaFingerprint $e $true; if (-not $strict.ContainsKey($k)) { $strict[$k] = @() }; $strict[$k] += $e }
-    $dups = @($strict.Values | Where-Object { $_.Count -gt 1 })
-    if (-not $dups.Count) { Add-Result 'ConditionalAccess' 'Policies with identical settings' 'None found' 'No duplicates' Compliant $link 'Two policies with the same users, apps and controls do the same job twice and make troubleshooting harder.' $doc $docText }
-    $dn = 0
-foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group ${dn}: $($d.Count) policies do the same thing" "Identical settings in:`n$(($d | ForEach-Object { '- ' + $_.displayName }) -join "`n")" 'One policy' Drift $link 'These policies target the same users and apps and require the same controls. Keep one and remove or merge the others, otherwise changes have to be made twice and the result is hard to explain.' $doc $docText }
 
     Set-Group 'Break-glass protection'
     Invoke-Part 'ConditionalAccess' 'Break-glass group excluded from policies' {
