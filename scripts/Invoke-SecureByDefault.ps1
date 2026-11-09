@@ -464,24 +464,27 @@ function Step-AuditLog {
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
         Connect-ExoNow
         $prevEap = $global:ErrorActionPreference; $global:ErrorActionPreference = 'Stop'
+        Write-Step 'Tenant preparation' 'One-time Exchange setup (Enable-OrganizationCustomization). New tenants need this before the audit log can be changed.'
         $oc = $null; try { $oc = Get-OrganizationConfig } catch { }
-        if (-not ($oc -and $oc.IsDehydrated -eq $false)) {
-            Write-Host '   Step 1: preparing the tenant (Enable-OrganizationCustomization). One time, can take a few minutes...' -ForegroundColor DarkGray
-            try { Enable-OrganizationCustomization } catch { if ("$($_.Exception.Message)" -notmatch 'already|DSAlreadyExist') { Write-Host "   Note: $($_.Exception.Message)" -ForegroundColor DarkGray } }
-            foreach ($w in 1..40) {
-                $chk = $null; try { $chk = Get-OrganizationConfig } catch { }
-                if ($chk -and $chk.IsDehydrated -eq $false) { break }
-                Start-Sleep -Seconds 15
-            }
+        Write-Host "   Tenant reports IsDehydrated = $(if ($oc) { $oc.IsDehydrated } else { 'unknown' })" -ForegroundColor DarkGray
+        Write-Host '   Running Enable-OrganizationCustomization (about 30-60 seconds on a new tenant)...' -ForegroundColor DarkGray
+        $swp = [Diagnostics.Stopwatch]::StartNew()
+        try { Enable-OrganizationCustomization; Write-Host "   Done in $([int]$swp.Elapsed.TotalSeconds) seconds." -ForegroundColor Green }
+        catch {
+            if ("$($_.Exception.Message)" -match 'already|DSAlreadyExist') { Write-Host '   Already prepared.' -ForegroundColor DarkGray }
+            else { Write-Host "   Note: $($_.Exception.Message)" -ForegroundColor Yellow }
         }
-        Write-Host '   Step 2: turning on the audit log...' -ForegroundColor DarkGray
+        Start-Sleep -Seconds 15
+        Write-Host '   Turning on the audit log...' -ForegroundColor DarkGray
         $done = $false; $lastErr = ''
-        foreach ($try in 1..20) {
+        foreach ($try in 1..12) {
             try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break }
             catch {
                 $lastErr = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-                if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout') { break }
-                Start-Sleep -Seconds 30
+                if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout|server side') { break }
+                Write-Host "   Attempt $try of 12 not accepted yet, retrying in 20 seconds..." -ForegroundColor DarkGray
+                if ($lastErr -match 'Enable-OrganizationCustomization' -and $try -in 3, 6, 9) { try { Enable-OrganizationCustomization } catch { } }
+                Start-Sleep -Seconds 20
             }
         }
         if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "Set-AdminAuditLogConfig failed: $lastErr" }
