@@ -474,7 +474,7 @@ function Step-AuditLog {
         $ok = $false
         $prevEap = $global:ErrorActionPreference; $global:ErrorActionPreference = 'Stop'
         foreach ($try in 1..3) {
-            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $ok = $true; break }
+            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $ok = $true; break }
             catch {
                 $m = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
                 if (-not $hydrated -and $m -match 'Enable-OrganizationCustomization') { & $hydrate; $hydrated = $true; continue }
