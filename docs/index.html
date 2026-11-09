@@ -55,7 +55,7 @@
 
 <section id="demo">
   <h2 class="reveal">See Discover in action</h2>
-  <p class="sub reveal"><strong>About a minute of your time.</strong> You are just one minute away from your discovery report.</p>
+  <p class="sub reveal"><strong>About 5 minutes of your time.</strong> You are just 5 minutes away from your discovery report.</p>
   <div class="videos">
     <figure class="reveal"><video controls playsinline preload="metadata" poster="media/discover-console.jpg"><source src="media/discover-console.mp4" type="video/mp4"></video><figcaption>The script reads your tenant settings and shows what needs a change</figcaption></figure>
     <figure class="reveal"><video controls playsinline preload="metadata"><source src="media/discover-report.mp4" type="video/mp4"></video><figcaption>The HTML report opens automatically, grouped by category</figcaption></figure>
@@ -64,12 +64,12 @@
 
 <section id="why">
   <h2 class="reveal">Why Secure by Default</h2>
-  <p class="sub reveal">ALSO's JSON configuration files cover policies and baselines. Some prerequisites live outside them: tenant switches, emergency access, authentication methods, enrollment and connector state. This tool closes that gap.</p>
+  <p class="sub reveal">A secure foundation is what every other security control, and every Copilot rollout, stands on. Audit logging, emergency access, strong sign-in methods, device enrollment and sensible tenant defaults decide whether policies actually protect you, and whether you can investigate when something goes wrong. Getting them right from day one, on new and existing tenants, prevents gaps that are hard to see later.</p>
   <div class="grid">
     <div class="card reveal"><div class="ic">🔍</div><h3>Discover before enforce</h3><p>Default mode is strictly read-only and produces a drift report against the reference state.</p></div>
     <div class="card reveal"><div class="ic">🧭</div><h3>Guided step by step</h3><p>Each change is numbered, explained and confirmed. Answer &ldquo;all&rdquo; to apply the rest, or &ldquo;skip&rdquo; to stop changing.</p></div>
     <div class="card reveal"><div class="ic">🎯</div><h3>License aware</h3><p>Reads your licenses first and only recommends what fits: everything for E5/E7 or security suites, no Defender for Identity or Cloud Apps for E3, F1, F3 and Business Premium, and no Intune or Defender products for Business Basic and Standard.</p></div>
-    <div class="card reveal"><div class="ic">📋</div><h3>One clear report</h3><p>Two tabs: Automated checks and actions, and Manual checks and actions. Each item explains why it matters, what changes from what to what, and links to the portal and the ALSO guide. Filter by needs action, OK or info, and print it.</p></div>
+    <div class="card reveal"><div class="ic">📋</div><h3>One clear report</h3><p>Two tabs: Automated checks and actions, and Manual checks and actions. Each item explains why it matters, what changes from what to what, and links to the portal and the ALSO guide. Filter by needs action, OK or info.</p></div>
     <div class="card reveal"><div class="ic">🗃️</div><h3>Works on existing tenants</h3><p>Lists the Conditional Access, Intune and Purview policies you already have, ALSO or not, flags identical duplicates and never changes policies it did not create.</p></div>
     <div class="card reveal"><div class="ic">🧹</div><h3>Wipe what was deployed</h3><p>Run <code>-Mode Wipe</code> to undo a test or a rollout. Matches only the exact ALSO names, asks per category and needs you to type WIPE. Tenant-wide settings are not reverted.</p></div>
 <div class="card reveal"><div class="ic">🛡️</div><h3>Safe by design</h3><p>Run the script from your own controlled environment, such as an admin workstation or a secured jump host. It uses your interactive Global Administrator sign-in, runs locally, and keeps reports on your machine.</p></div>
@@ -92,7 +92,7 @@
     <div class="card reveal"><div class="ic">🔐</div><h3>Conditional Access baseline</h3><p>Imports ALSO's policies switched off, creates the groups and authentication contexts they need, keeps break-glass excluded from every policy and flags duplicates. Deploy all or choose one by one.</p><span class="tag auto">automated</span></div>
     <div class="card reveal"><div class="ic">📱</div><h3>Intune policy baseline</h3><p>Compliance, app protection, BitLocker, local admin rights, Defender and Edge policies, imported unassigned. Your existing Intune policies are listed too.</p><span class="tag auto">automated</span></div>
     <div class="card reveal"><div class="ic">👑</div><h3>Administrator roles &amp; access reviews</h3><p>Permanent Global Administrator count, eligible roles and access reviews.</p><span class="tag auto">automated</span><span class="tag man">guided</span></div>
-    <div class="card reveal"><div class="ic">📖</div><h3>Every step of the ALSO Copilot readiness guide</h3><p>What can be automated is; the rest appears in the manual checks tab with the exact portal link.</p><span class="tag auto">automated</span><span class="tag man">guided</span></div>
+    <div class="card reveal"><div class="ic">📖</div><h3>Every secure foundation step</h3><p>All secure foundation steps from the <a href="https://coc-ms.github.io/ALSO-Microsoft-Security-Fundamentals-and-Copilot-Readiness/" target="_blank" rel="noopener">ALSO Copilot readiness guide</a> are covered in one discovery and action report. What can be automated is; the rest appears in the manual checks tab with the exact portal link.</p><span class="tag auto">automated</span><span class="tag man">guided</span></div>
     <div class="card reveal"><div class="ic">🗂️</div><h3>Microsoft Purview checks</h3><p>Reads your existing sensitivity labels, label policies, DLP and retention policies next to the ALSO Purview baseline, checks the unified audit log and the SharePoint label settings, and in Enforce mode deploys what is missing (DLP policies start in simulation mode).</p><span class="tag auto">automated</span><span class="tag man">guided</span></div>
   </div>
 </section>
