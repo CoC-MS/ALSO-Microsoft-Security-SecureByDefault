@@ -462,17 +462,35 @@ function Step-AuditLog {
     try { $cfg = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Write-Host "   Direct read did not work ($($_.Exception.Message)); using the Exchange module." -ForegroundColor DarkGray }
     if (-not $cfg) { Connect-ExoNow; $cfg = Get-AdminAuditLogConfig }
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
-        try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
-        catch {
-            if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
-            try { [void](Invoke-ExoRest 'Enable-OrganizationCustomization') } catch { }
-            $script:AuditPending = $true
-            throw 'Microsoft prepares every new tenant once before this setting can be changed (5-30 minutes). The script has asked Microsoft to do that and tries again automatically after the other steps.'
+        Connect-ExoNow
+        $hydrate = {
+            Write-Host '   Preparing the tenant for this change (one time, about 30-60 seconds)...' -ForegroundColor DarkGray
+            try { Enable-OrganizationCustomization -ErrorAction Stop }
+            catch { if ("$($_.Exception.Message)" -notmatch 'already|DSAlreadyExist') { throw "Could not prepare the tenant: $($_.Exception.Message)" } }
+            Start-Sleep -Seconds 15
         }
-        $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Connect-ExoNow; $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
+        $oc = $null; try { $oc = Get-OrganizationConfig -ErrorAction Stop } catch { }
+        if ($oc -and $oc.IsDehydrated) { & $hydrate; $hydrated = $true } else { $hydrated = $false }
+        $ok = $false
+        foreach ($try in 1..3) {
+            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $ok = $true; break }
+            catch {
+                $m = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+                if (-not $hydrated -and $m -match 'Enable-OrganizationCustomization') { & $hydrate; $hydrated = $true; continue }
+                if ($try -eq 3) { throw "Set-AdminAuditLogConfig failed: $m" }
+                Start-Sleep -Seconds 10
+            }
+        }
+        $setCmd = Get-Command Set-AdminAuditLogConfig -ErrorAction SilentlyContinue
+        $getCmd = if ($setCmd) { Get-Command Get-AdminAuditLogConfig -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -eq $setCmd.Source } | Select-Object -First 1 }
+        if (-not $getCmd) { $getCmd = Get-Command Get-AdminAuditLogConfig -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        foreach ($va in 1..5) {
+            try { if ((& $getCmd -ErrorAction Stop).UnifiedAuditLogIngestionEnabled) { return } } catch { }
+            if ($va -lt 5) { Start-Sleep -Seconds 5 }
+        }
+        Write-Host '   The change was accepted. Microsoft can take up to 60 minutes before the audit log shows as On.' -ForegroundColor DarkGray
     } 'https://purview.microsoft.com/audit/auditsearch'
 }
-
 function YN($v) { if ($v -eq $true) { 'Yes' } elseif ($v -eq $false) { 'No' } else { 'Unknown' } }
 function Cap($s) { if ($s) { "$s".Substring(0, 1).ToUpper() + "$s".Substring(1) } else { 'Unknown' } }
 $script:GuestRoles = @{
@@ -2219,24 +2237,6 @@ foreach ($s in $Steps) {
     Invoke-Safe $s { & "Step-$s" }
 }
 
-if ($script:AuditPending) {
-    Write-Host ''
-    Write-Host 'Finishing the unified audit log (Microsoft was still preparing the new tenant)...' -ForegroundColor Cyan
-    $auDone = $false
-    foreach ($try in 1..60) {
-        try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }); $auDone = $true; break } catch { }
-        Start-Sleep -Seconds 15
-    }
-    $auRes = @($script:Results | Where-Object { $_.Step -eq 'AuditLog' -and $_.Status -eq 'Error' }) | Select-Object -First 1
-    if ($auDone) {
-        Write-Host '  Unified audit log is now on.' -ForegroundColor Green
-        if ($auRes) { $auRes.Status = 'Fixed'; $auRes.Detail = 'Switched on after Microsoft finished preparing the new tenant.' }
-    }
-    else {
-        Write-Host '  Microsoft is still preparing the tenant. Run Enforce again later.' -ForegroundColor Yellow
-        if ($auRes) { $auRes.Detail = 'Microsoft is still preparing this new tenant (it can take up to 30 minutes). Run Enforce again later, or press "Start recording user and admin activity" in Microsoft Purview (Audit).' }
-    }
-}
 #region report
 New-Item -ItemType Directory -Force $OutputPath | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
