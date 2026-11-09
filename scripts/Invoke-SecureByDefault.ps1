@@ -472,6 +472,7 @@ function Step-AuditLog {
         $oc = $null; try { $oc = Get-OrganizationConfig -ErrorAction Stop } catch { }
         if ($oc -and $oc.IsDehydrated) { & $hydrate; $hydrated = $true } else { $hydrated = $false }
         $ok = $false
+        $ErrorActionPreference = 'Stop'
         foreach ($try in 1..3) {
             try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true; $ok = $true; break }
             catch {
@@ -484,6 +485,7 @@ function Step-AuditLog {
         $setCmd = Get-Command Set-AdminAuditLogConfig -ErrorAction SilentlyContinue
         $getCmd = if ($setCmd) { Get-Command Get-AdminAuditLogConfig -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -eq $setCmd.Source } | Select-Object -First 1 }
         if (-not $getCmd) { $getCmd = Get-Command Get-AdminAuditLogConfig -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        $ErrorActionPreference = 'Continue'
         foreach ($va in 1..5) {
             try { if ((& $getCmd -ErrorAction Stop).UnifiedAuditLogIngestionEnabled) { return } } catch { }
             if ($va -lt 5) { Start-Sleep -Seconds 5 }
