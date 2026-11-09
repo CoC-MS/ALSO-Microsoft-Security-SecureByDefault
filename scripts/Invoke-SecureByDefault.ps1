@@ -614,6 +614,20 @@ function Step-Consent {
         $again = @((Graph GET $uri).defaultUserRolePermissions.permissionGrantPoliciesAssigned)
         if ($low -notin $again) { throw 'Microsoft accepted the request but the user consent setting did not change. Set it in the Entra admin center: Enterprise apps > Consent and permissions > User consent settings.' }
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings' $consentWhy
+    $lowPerms = 'profile', 'openid', 'offline_access', 'User.Read', 'email'
+    $gSp = @(Get-AllPages 'https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq ''00000003-0000-0000-c000-000000000000''&$select=id,oauth2PermissionScopes') | Select-Object -First 1
+    $clsUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($gSp.id)/delegatedPermissionClassifications"
+    $haveCls = @(Get-AllPages $clsUri | Where-Object { $_.classification -eq 'low' } | ForEach-Object { "$($_.permissionName)" })
+    $missCls = @($lowPerms | Where-Object { $_ -notin $haveCls })
+    $clsNow = if ($missCls.Count) { 'Missing from the low-impact list: ' + ($missCls -join ', ') } else { 'All five are on the low-impact list' }
+    $clsWhy = 'The consent setting above only lets users approve permissions that are on the low-impact list. If the list is empty, users cannot consent to anything, even basic sign-in. The standard five Microsoft Graph permissions (profile, openid, offline_access, User.Read, email) are what Microsoft recommends.'
+    Compare-Setting 'Consent' 'Low-impact permissions list: profile, openid, offline_access, User.Read, email' $clsNow 'All five are on the low-impact list' {
+        foreach ($pn in $missCls) {
+            $sc = @($gSp.oauth2PermissionScopes | Where-Object { $_.value -eq $pn -and $_.type -eq 'User' }) | Select-Object -First 1
+            if (-not $sc) { throw "Permission '$pn' was not found on Microsoft Graph." }
+            Graph POST $clsUri @{ permissionId = "$($sc.id)"; permissionName = $pn; classification = 'low' } | Out-Null
+        }
+    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/PermissionClassification' $clsWhy
     $wUri = 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
     $w = Graph GET $wUri
     $revCount = @($w.reviewers).Count
