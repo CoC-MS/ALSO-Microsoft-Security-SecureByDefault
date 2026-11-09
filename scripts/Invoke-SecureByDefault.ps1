@@ -197,6 +197,7 @@ function Initialize-Module([string]$Name) {
 $graphScopes = if ($Mode -eq 'Wipe') {
     'Policy.ReadWrite.ConditionalAccess', 'Policy.Read.All', 'Application.Read.All', 'Group.ReadWrite.All', 'User.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'Directory.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'Organization.Read.All', 'DeviceManagementConfiguration.ReadWrite.All',
+    'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.ConsentRequest', 'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'Policy.ReadWrite.MobilityManagement', 'SharePointTenantSettings.ReadWrite.All',
     'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All'
 }
 elseif ($Mode -eq 'Enforce') {
@@ -513,12 +514,43 @@ function Step-UserSettings {
     try {
         $ux = 'https://graph.microsoft.com/beta/admin/entra/uxSetting'
         $u = Graph GET $ux
-        Compare-Setting 'UserSettings' 'Restrict access to Microsoft Entra admin center' (YN $u.restrictNonAdminAccess) $ref.restrictAdminCenter {
-            Graph PATCH $ux @{ restrictNonAdminAccess = ($ref.restrictAdminCenter -eq 'Yes') } | Out-Null } $link
+        $adminWhy = 'When this is Yes, people who are not administrators cannot browse the Microsoft Entra admin center (entra.microsoft.com or the Azure portal) to look up users, groups and apps. Group and app owners also cannot manage what they own there. It reduces what an attacker can learn from a compromised normal account.'
+        $adminNow = if ("$($u.restrictNonAdminAccess)" -eq 'true') { 'Yes' } else { 'No' }
+        Compare-Setting 'UserSettings' 'Restrict access to Microsoft Entra admin center' $adminNow $ref.restrictAdminCenter {
+            $want = if ($ref.restrictAdminCenter -eq 'Yes') { 'true' } else { 'false' }
+            Graph PATCH $ux @{ restrictNonAdminAccess = $want } | Out-Null
+            $chk = Graph GET $ux
+            if ("$($chk.restrictNonAdminAccess)" -ne $want) { throw 'Microsoft accepted the request but the setting did not change. Turn it on in the Entra admin center (Entra ID > Users > User settings > Administration center).' }
+        } $link $adminWhy
     }
-    catch { Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' "Not readable: $($_.Exception.Message)" $ref.restrictAdminCenter Manual $link }
+    catch { Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' "Could not be read or set: $($_.Exception.Message)" $ref.restrictAdminCenter Manual $link 'Microsoft only allows this setting to be changed by a signed-in Global Administrator, and the request was refused. Turn it on manually: Entra ID > Users > User settings > Administration center > Restrict access to Microsoft Entra admin center = Yes.' }
     Add-Result 'UserSettings' 'Allow users to connect work or school account with LinkedIn' 'Cannot be read automatically (no Microsoft API)' "$($ref.linkedIn) - business/privacy decision" Manual $link
     Add-Result 'UserSettings' 'Show keep user signed in' 'Cannot be read automatically (no Microsoft API)' $ref.showKeepSignedIn Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding'
+}
+
+function Select-Reviewers {
+    $ids = @($AdminConsentReviewerIds | Where-Object { $_ })
+    if ($ids.Count) { return $ids }
+    if (-not $script:MeId) { $meNow = Graph GET 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'; $script:MeId = $meNow.id; $script:MeUpn = $meNow.userPrincipalName }
+    if ($Force) { return @($script:MeId) }
+    Write-Host ''
+    Write-Host '   Who should review admin consent requests? Reviewers receive each request and approve or deny it.' -ForegroundColor Yellow
+    Write-Host "     [1] The account running this script ($($script:MeUpn))"
+    Write-Host '     [2] Another account (you type the user name)'
+    Write-Host '     [3] Both'
+    $out = @()
+    while (-not $out.Count) {
+        $c = Read-Host '   Choose 1, 2 or 3 (default 1)'
+        if (-not $c) { $c = '1' }
+        if ($c -in '1', '3') { $out += $script:MeId }
+        if ($c -in '2', '3') {
+            $upn = Read-Host '   User name (UPN, for example anna@contoso.com) of the reviewer'
+            try { $u = Graph GET "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($upn.Trim()))?`$select=id,userPrincipalName"; if ($u.id) { $out += $u.id; Write-Host "   Added reviewer $($u.userPrincipalName)" -ForegroundColor DarkGray } }
+            catch { Write-Host "   That user was not found ($($_.Exception.Message))." -ForegroundColor Yellow }
+        }
+        if (-not $out.Count) { Write-Host '   Please try again.' -ForegroundColor Yellow }
+    }
+    $out | Select-Object -Unique
 }
 
 function Step-Consent {
@@ -528,24 +560,39 @@ function Step-Consent {
     $p = Graph GET $uri
     $assigned = @($p.defaultUserRolePermissions.permissionGrantPoliciesAssigned)
     $low = $ref.userConsentPolicy
-    $ok = ($low -in $assigned) -and -not ($assigned | Where-Object { $_ -match 'microsoft-user-default-legacy' })
-    Compare-Setting 'Consent' 'User consent limited to low-risk (verified publishers)' $ok 'True' {
+    $consentName = {
+        param($list)
+        $list = @($list)
+        if (-not $list.Count) { 'Do not allow user consent' }
+        elseif ($list | Where-Object { $_ -match 'legacy' }) { 'Allow user consent for all apps (least secure)' }
+        elseif ($list | Where-Object { $_ -match 'default-low' }) { 'Allow user consent for verified publishers, low-impact permissions only' }
+        else { 'Allow user consent with a custom or Microsoft-managed policy' }
+    }
+    $consentNow = & $consentName $assigned
+    $consentWant = & $consentName @($low)
+    $consentWhy = 'When users can consent to apps on their own, an attacker can trick them into granting a malicious app access to their mail and files (consent phishing). Limiting consent to apps from verified publishers and low-impact permissions keeps normal use working while blocking the risky cases. Anything beyond that goes through an admin.'
+    Compare-Setting 'Consent' 'User consent for apps: only verified publishers and low-impact permissions' $consentNow $consentWant {
         $keep = @($assigned | Where-Object { $_ -notmatch '^ManagePermissionGrantsForSelf\.' })
-        Graph PATCH $uri @{ defaultUserRolePermissions = @{ permissionGrantPoliciesAssigned = @($low) + $keep } }
-    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings'
-    $w = Graph GET 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
-    Compare-Setting 'Consent' 'Admin consent request workflow enabled' $w.isEnabled 'True' {
-        $revIds = @($AdminConsentReviewerIds | Where-Object { $_ })
-        if (-not $script:MeId) { $meNow = Graph GET 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName'; $script:MeId = $meNow.id; $script:MeUpn = $meNow.userPrincipalName }
-        $meListed = @($revIds | Where-Object { $_ -eq $script:MeId }).Count -gt 0
-        if (-not $meListed -and $script:MeId -and (Confirm-Change "Add you ($($script:MeUpn)) as a reviewer of admin consent requests? Reviewers receive and approve the requests.")) { $revIds += $script:MeId }
-        if (-not $revIds.Count) { throw 'The workflow needs at least one reviewer. Run again and add yourself as reviewer, or pass -AdminConsentReviewerIds.' }
+        Graph PATCH $uri @{ defaultUserRolePermissions = @{ permissionGrantPoliciesAssigned = @($low) + $keep } } | Out-Null
+        $again = @((Graph GET $uri).defaultUserRolePermissions.permissionGrantPoliciesAssigned)
+        if ($low -notin $again) { throw 'Microsoft accepted the request but the user consent setting did not change. Set it in the Entra admin center: Enterprise apps > Consent and permissions > User consent settings.' }
+    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings' $consentWhy
+    $wUri = 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
+    $w = Graph GET $wUri
+    $revCount = @($w.reviewers).Count
+    $wfOn = ($w.isEnabled -eq $true) -and $revCount -gt 0
+    $wfNow = if ($wfOn) { "Yes ($revCount reviewer(s))" } elseif ($w.isEnabled -eq $true) { 'No (switched on but has no reviewers)' } else { 'No' }
+    $wfWhy = 'The admin consent workflow lets users ask an administrator to approve an app they cannot consent to themselves, instead of being stuck or looking for a workaround. It needs at least one reviewer. You choose who the reviewers are.'
+    Compare-Setting 'Consent' 'Admin consent request workflow enabled' $wfNow 'Yes' {
+        $revIds = @(Select-Reviewers)
         $reviewerList = @(foreach ($rid in $revIds) { @{ query = "/users/$rid"; queryType = 'MicrosoftGraph' } })
-        Graph PUT 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy' @{
+        Graph PUT $wUri @{
             isEnabled = $true; notifyReviewers = $true; remindersEnabled = $true; requestDurationInDays = $ref.requestDurationInDays
             reviewers = $reviewerList
-        }
-    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/AdminConsentSettings'
+        } | Out-Null
+        $chk = Graph GET $wUri
+        if (-not ($chk.isEnabled -eq $true -and @($chk.reviewers).Count -gt 0)) { throw 'Microsoft accepted the request but the workflow is still off. Turn it on in the Entra admin center: Enterprise apps > Consent and permissions > Admin consent settings.' }
+    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/AdminConsentSettings' $wfWhy
 }
 
 function Step-BreakGlass {
@@ -719,11 +766,29 @@ function Step-BreakGlass {
 
     $mine = @($script:Results | Select-Object -Skip $start)
     $ok = @($mine | Where-Object { $_.Status -in 'Compliant', 'Fixed' }).Count
-    $bad = @($mine | Where-Object { $_.Status -eq 'Drift' }).Count
-    $verdict = if ($found -and $bad -eq 0) { 'Your existing accounts meet the checks. Creating new accounts is optional.' } elseif ($found) { "Your existing accounts fail $bad check(s). Fix them, or create the two new accounts." } elseif ($bad -eq 0) { 'The two ALSO break-glass accounts are set up.' } else { "$bad item(s) still need to be created or fixed." }
+    $drift = @($mine | Where-Object { $_.Status -eq 'Drift' })
+    $bad = $drift.Count
+    $existFail = @($drift | Where-Object { $_.Group -like '2. Existing account*' })
+    $alsoMissing = @($drift | Where-Object { $_.Group -match '^[3-6]\.' })
+    $lines = @()
+    if ($found.Count) {
+        $lines += "Existing accounts: found $($found.Count) ($(($found | ForEach-Object { $_.userPrincipalName }) -join ', ')). $(if ($existFail.Count) { "$($existFail.Count) of their checks fail: $(($existFail | ForEach-Object { $_.Setting }) -join '; ')." } else { 'All of their checks pass.' })"
+    }
+    else { $lines += 'Existing accounts: none found by name. This only means none use words like emergency, break or glass. Check Entra ID before creating new ones.' }
+    $madeNow = @($mine | Where-Object { $_.Status -eq 'Fixed' }).Count
+    if ($alsoMissing.Count) { $lines += "ALSO accounts (svr_ea_01 / svr_ea_02): $($alsoMissing.Count) item(s) missing: $(($alsoMissing | ForEach-Object { $_.Setting }) -join '; ')." }
+    elseif ($found.Count -and -not (@($mine | Where-Object { $_.Group -like '3.*' -and $_.Status -in 'Compliant', 'Fixed' }).Count)) { $lines += 'ALSO accounts (svr_ea_01 / svr_ea_02): not created. Optional, because your existing accounts are being used.' }
+    else { $lines += "ALSO accounts (svr_ea_01 / svr_ea_02): in place$(if ($madeNow) { " ($madeNow item(s) created or fixed in this run)" })." }
+    $lines += 'People still have to do the four items in section 7 (trusted admins on the unit, sign-in alert, Conditional Access exclusion, FIDO2 keys).'
+    $outcome = if ($found.Count -and $existFail.Count -eq 0 -and -not $alsoMissing.Count) { 'Ready' } elseif ($found.Count -and $existFail.Count -gt 0 -and $Mode -eq 'Discover') { 'Existing accounts need fixing' } elseif (-not $bad) { 'Ready' } elseif ($Mode -eq 'Discover') { 'Not set up yet' } else { 'Needs action' }
+    $verdict = switch ($outcome) {
+        'Ready' { 'Emergency access is in place. Only the manual items in section 7 remain.' }
+        'Existing accounts need fixing' { 'You already have emergency accounts, but they do not meet every requirement. Fix them, or run Enforce to create the two ALSO accounts.' }
+        'Not set up yet' { 'No complete emergency access setup was found. Run Enforce mode to create the two ALSO accounts, their group and the restricted management unit.' }
+        default { "$bad item(s) still need to be created or fixed." }
+    }
     Set-Group 'Summary'
-    Add-Result 'BreakGlass' 'Break-glass readiness' "$ok check(s) pass, $bad need action" 'All checks pass' $(if ($bad) { 'Info' } else { 'Compliant' }) $link "$verdict How to read this section: 1 shows whether you already have emergency accounts, 2 checks them, 3 to 6 cover the two new ALSO accounts (optional if yours pass), 7 lists what a person must do." $BreakGlassPdf $pdf
-    $sum = $script:Results[$script:Results.Count - 1]
+    Add-Result 'BreakGlass' 'Break-glass readiness' $outcome 'Ready' $(if ($outcome -eq 'Ready') { 'Compliant' } else { 'Drift' }) $link "$verdict $($lines -join ' ') Sections: 1 existing accounts, 2 their checks, 3 to 6 the two ALSO accounts, 7 what a person must do." $BreakGlassPdf $pdf    $sum = $script:Results[$script:Results.Count - 1]
     $script:Results.RemoveAt($script:Results.Count - 1)
     $sum.Group = '0. Summary'
     $script:Results.Insert($start, $sum)
@@ -1990,10 +2055,63 @@ function Step-WipeBreakGlass {    Write-Step 'Remove emergency access accounts' 
     } $link 'Accounts are deleted permanently so the same names can be created again. The group is removed first, then the accounts. Only the accounts and group that this script created are removed (matched by the exact names, the marker or the group).'
 }
 
+function Step-WipeTenantSettings {
+    Write-Step 'Set tenant-wide settings back to Microsoft defaults' 'Only settings that currently differ from the Microsoft default are listed. Nothing is changed until you choose.'
+    Set-Group 'Tenant-wide settings'
+    $items = New-Object System.Collections.ArrayList
+    $add = {
+        param($Step, $Text, $Do)
+        if ($Step -in $Steps) { [void]$items.Add([pscustomobject]@{ Name = $Text; Do = $Do }) }
+    }
+    $authUri = 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy'
+    try {
+        $p = Graph GET $authUri; $d = $p.defaultUserRolePermissions
+        if ($d.allowedToCreateApps -eq $false) { & $add 'UserSettings' 'Users can register applications: from No to Yes' { Graph PATCH $authUri @{ defaultUserRolePermissions = @{ allowedToCreateApps = $true } } | Out-Null } }
+        if ($d.allowedToCreateTenants -eq $false) { & $add 'UserSettings' 'Non-admin users can create tenants: from No to Yes' { Graph PATCH $authUri @{ defaultUserRolePermissions = @{ allowedToCreateTenants = $true } } | Out-Null } }
+        if ($d.allowedToCreateSecurityGroups -eq $false) { & $add 'UserSettings' 'Users can create security groups: from No to Yes' { Graph PATCH $authUri @{ defaultUserRolePermissions = @{ allowedToCreateSecurityGroups = $true } } | Out-Null } }
+        if ("$($p.guestUserRoleId)" -ne 'a0b1b346-4d3e-4e8b-98f8-753987be4970' -and "$($p.guestUserRoleId)" -ne '10dae51f-b6af-4016-8d66-8c2a99b929b3') { & $add 'UserSettings' 'Guest user access: back to Limited access (Microsoft default)' { Graph PATCH $authUri @{ guestUserRoleId = '10dae51f-b6af-4016-8d66-8c2a99b929b3' } | Out-Null } }
+        $assigned = @($d.permissionGrantPoliciesAssigned)
+        if ($assigned | Where-Object { $_ -match 'default-low' }) {
+            & $add 'Consent' 'User consent for apps: from verified publishers and low-impact permissions to the Microsoft-managed default' {
+                $keep = @($assigned | Where-Object { $_ -notmatch '^ManagePermissionGrantsForSelf\.' })
+                Graph PATCH $authUri @{ defaultUserRolePermissions = @{ permissionGrantPoliciesAssigned = @('ManagePermissionGrantsForSelf.microsoft-user-default-recommended') + $keep } } | Out-Null }
+        }
+    }
+    catch { Add-Result 'UserSettings' 'Reading the user settings' $_.Exception.Message 'Readable' Error 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/UserSettings' }
+    try {
+        $ux = 'https://graph.microsoft.com/beta/admin/entra/uxSetting'
+        if ("$((Graph GET $ux).restrictNonAdminAccess)" -eq 'true') { & $add 'UserSettings' 'Restrict access to Microsoft Entra admin center: from Yes to No' { Graph PATCH $ux @{ restrictNonAdminAccess = 'false' } | Out-Null } }
+    }
+    catch { }
+    try {
+        $wUri = 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
+        if ((Graph GET $wUri).isEnabled -eq $true) { & $add 'Consent' 'Admin consent request workflow: from enabled to disabled' { Graph PUT $wUri @{ isEnabled = $false; notifyReviewers = $false; remindersEnabled = $false; requestDurationInDays = 30; reviewers = @() } | Out-Null } }
+    }
+    catch { }
+    try {
+        $sp = 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings'; $t = Graph GET $sp
+        if ("$($t.sharingCapability)" -in 'disabled', 'existingExternalUserSharingOnly', 'externalUserSharingOnly') { & $add 'Sharepoint' "SharePoint and OneDrive external sharing: from $($t.sharingCapability) to externalUserAndGuestSharing (Anyone, Microsoft default)" { Graph PATCH $sp @{ sharingCapability = 'externalUserAndGuestSharing' } | Out-Null } }
+        if ($t.isResharingByExternalUsersEnabled -eq $false) { & $add 'Sharepoint' 'Guests can share items they do not own: from No to Yes' { Graph PATCH $sp @{ isResharingByExternalUsersEnabled = $true } | Out-Null } }
+    }
+    catch { }
+    try {
+        $mdm = 'https://graph.microsoft.com/beta/policies/mobileDeviceManagementPolicies'
+        $pol = (Graph GET $mdm).value | Where-Object { $_.displayName -match 'Intune' } | Select-Object -First 1
+        if ($pol -and "$($pol.appliesTo)" -ne 'none') { & $add 'IntuneEnrollment' 'Automatic Intune enrollment (MDM user scope): back to None' { Graph PATCH "$mdm/$($pol.id)" @{ appliesTo = 'none' } | Out-Null } }
+    }
+    catch { }
+    try {
+        $dr = Graph GET 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
+        if ($dr.localAdminPassword.isEnabled -eq $true) { & $add 'Laps' 'Entra LAPS: from enabled to disabled' { Set-DeviceRegPolicy { param($x) $x.localAdminPassword.isEnabled = $false } } }
+        if ($dr.azureADJoin.localAdmins.enableGlobalAdmins -eq $false) { & $add 'Laps' 'Global administrators become local admin on joined devices: from No to Yes (Microsoft default)' { Set-DeviceRegPolicy { param($x) $x.azureADJoin.localAdmins.enableGlobalAdmins = $true } } }
+    }
+    catch { }
+    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
+}
 function Invoke-Wipe {
     Write-Host ''
     Write-Host 'WIPE mode: removes what this script deployed (matched by the exact ALSO names and markers). Your own policies, groups and labels are never touched.' -ForegroundColor Yellow
-    Write-Host 'Tenant-wide settings changed by Enforce mode (user settings, consent, authentication methods, SharePoint sharing, audit log) are not reverted.' -ForegroundColor DarkGray
+    Write-Host 'Tenant-wide settings (user settings, consent, SharePoint sharing, device and Intune enrollment settings) can be set back to Microsoft defaults; you choose which ones.' -ForegroundColor DarkGray
     if (-not $Force -and -not $WhatIfPreference) {
         if ((Read-Host 'Type WIPE to continue, anything else cancels') -ne 'WIPE') { Write-Host 'Cancelled. Nothing was removed.' -ForegroundColor Green; exit 0 }
     }
@@ -2007,11 +2125,11 @@ function Invoke-Wipe {
     }
     catch { Write-Host "  Could not assign you to the restricted management unit: $($_.Exception.Message)" -ForegroundColor Yellow }
     if ('BreakGlass' -in $Steps) { Invoke-Safe 'BreakGlass' { Step-WipeRmau } }
-    foreach ($s in 'ConditionalAccess', 'IntunePolicies', 'Purview', 'BreakGlass') {
-        if ($s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
+    foreach ($s in 'ConditionalAccess', 'IntunePolicies', 'Purview', 'BreakGlass', 'TenantSettings') {
+        if ($s -eq 'TenantSettings' -or $s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
-    Write-Step 'Settings that are not reverted' 'Wipe only removes objects that the script created.'
-    Add-Result 'GuideManual' 'Tenant-wide settings changed by Enforce mode' 'Not reverted by Wipe' 'Set back by an administrator if needed' Manual 'https://entra.microsoft.com' 'Entra user settings, app consent, authentication methods (FIDO2), SharePoint sharing, the unified audit log, LAPS and device enrollment settings stay as they are. Restoring them to the old values means opening the matching portal page; the earlier Enforce report shows each previous value.'
+    Write-Step 'Settings that are left as they are' 'Wipe never switches these off.'
+    Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults and the other authentication methods stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
 }
 
 $basicSkip = 'IntuneEnrollment', 'IntunePolicies', 'ConditionalAccess', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
@@ -2042,7 +2160,7 @@ $cats = [ordered]@{
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
     ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
-    IntunePolicies = 'Devices: Intune policy baseline'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
+    IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
 $reportResults = @($script:Results | Where-Object Step -ne 'Licensing')

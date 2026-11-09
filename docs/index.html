@@ -71,7 +71,7 @@
     <div class="card reveal"><div class="ic">🎯</div><h3>License aware</h3><p>Reads your licenses first and only recommends what fits: everything for E5/E7 or security suites, no Defender for Identity or Cloud Apps for E3, F1, F3 and Business Premium, and no Intune or Defender products for Business Basic and Standard.</p></div>
     <div class="card reveal"><div class="ic">📋</div><h3>One clear report</h3><p>Two tabs: Automated checks and actions, and Manual checks and actions. Each item explains why it matters, what changes from what to what, and links to the portal and the ALSO guide. Filter by needs action, OK or info.</p></div>
     <div class="card reveal"><div class="ic">🗃️</div><h3>Works on existing tenants</h3><p>Lists the Conditional Access, Intune and Purview policies you already have, ALSO or not, flags identical duplicates and never changes policies it did not create.</p></div>
-    <div class="card reveal"><div class="ic">🧹</div><h3>Wipe what was deployed</h3><p>Run <code>-Mode Wipe</code> to undo a test or a rollout. Matches only the exact ALSO names, asks per category and needs you to type WIPE. Tenant-wide settings are not reverted.</p></div>
+    <div class="card reveal"><div class="ic">🧹</div><h3>Wipe what was deployed</h3><p>Run <code>-Mode Wipe</code> to undo a test or a rollout. Matches only the exact ALSO names, asks per category and needs you to type WIPE. It can also set tenant-wide settings back to Microsoft defaults, and you choose which.</p></div>
 <div class="card reveal"><div class="ic">🛡️</div><h3>Safe by design</h3><p>Run the script from your own controlled environment, such as an admin workstation or a secured jump host. It uses your interactive Global Administrator sign-in, runs locally, and keeps reports on your machine.</p></div>
   </div>
 </section>
@@ -104,7 +104,7 @@
     <div class="step reveal"><h3>Discover</h3><p>Compare the tenant with <code>config/reference-state.json</code>. Nothing changes.</p></div>
     <div class="step reveal"><h3>Review</h3><p>Open the HTML report; adjust the reference to fit your organization.</p></div>
     <div class="step reveal"><h3>Enforce</h3><p>Confirm each change, all at once or one by one, including each Purview part. A summary shows what changed, failed and still needs a person.</p></div>
-<div class="step reveal"><h3>Wipe (optional)</h3><p>Remove what the script deployed: Conditional Access and Intune policies, Purview items and the break-glass accounts. Choose all, one by one or none per category. Your own objects are never touched.</p></div>
+<div class="step reveal"><h3>Wipe (optional)</h3><p>Remove what the script deployed: Conditional Access and Intune policies, Purview items, tenant-wide settings (back to Microsoft defaults) and the break-glass accounts. Choose all, one by one or none per category. Your own objects are never touched.</p></div>
   </div>
 </section>
 
