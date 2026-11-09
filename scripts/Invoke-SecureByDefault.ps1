@@ -361,22 +361,27 @@ if ($needsSpo) {
         catch { Write-Host "  SharePoint sign-in failed ($($_.Exception.Message)). The SharePoint label setting will be a manual step." -ForegroundColor Yellow }
     }
 }
-if ($needsExo -or $needsPurview) {
-    Write-Host ''
-    Write-Host 'All sign-ins are done. Connecting to the Microsoft services now (each takes about 10-20 seconds)...' -ForegroundColor Cyan
-}
-if ($needsExo) {
+$script:ExoConnected = $false
+function Connect-ExoNow {
+    if ($script:ExoConnected) { return }
     $exOk = $false
     if ($exTok) {
-        try { Write-Host '  Connecting to Exchange Online...' -ForegroundColor DarkGray; Connect-ExchangeOnline -AccessToken $exTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $exOk = $true }
+        try { Write-Host '  Connecting to Exchange Online (about 10-20 seconds)...' -ForegroundColor DarkGray; Connect-ExchangeOnline -AccessToken $exTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $exOk = $true }
         catch { Write-Host "  Direct connection was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
     }
     if (-not $exOk) {
         try { Connect-ExchangeOnline -ShowBanner:$false -DisableWAM -ErrorAction Stop }
         catch { throw "Exchange Online sign-in failed: $($_.Exception.Message)" }
     }
+    $script:ExoConnected = $true
     Write-Host '  Connected to Exchange Online.' -ForegroundColor Green
 }
+$exoNeededNow = [bool]($needsExo -and ($Steps -contains 'MdoPresets' -or -not $exTok))
+if ($exoNeededNow -or $needsPurview) {
+    Write-Host ''
+    Write-Host 'All sign-ins are done. Connecting to the Microsoft services now (about 10-20 seconds)...' -ForegroundColor Cyan
+}
+if ($exoNeededNow) { Connect-ExoNow }
 if ($needsPurview) {
     $ippsOk = $false
     if ($ippsTok) {
@@ -455,13 +460,13 @@ function Step-AuditLog {
     Write-Host '   ...reading the audit log setting from Exchange' -ForegroundColor DarkGray
     $cfg = $null
     try { $cfg = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Write-Host "   Direct read did not work ($($_.Exception.Message)); using the Exchange module." -ForegroundColor DarkGray }
-    if (-not $cfg) { $cfg = Get-AdminAuditLogConfig }
+    if (-not $cfg) { Connect-ExoNow; $cfg = Get-AdminAuditLogConfig }
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
-        try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
+        try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
         catch {
             if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
             Write-Host '   Exchange needs "organization customization" turned on first. Doing that now (can take a minute)...' -ForegroundColor DarkGray
-            Enable-OrganizationCustomization -ErrorAction Stop
+            Connect-ExoNow; Enable-OrganizationCustomization -ErrorAction Stop
             $done = $false
             foreach ($try in 1..6) {
                 try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break }
@@ -469,7 +474,7 @@ function Step-AuditLog {
             }
             if (-not $done) { throw 'Organization customization is still being enabled. Run the script again in a few minutes.' }
         }
-        $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
+        $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Connect-ExoNow; $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
 }
 
