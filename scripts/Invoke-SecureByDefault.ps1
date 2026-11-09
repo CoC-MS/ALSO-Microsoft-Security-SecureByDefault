@@ -560,19 +560,7 @@ function Step-UserSettings {
         else { Add-Result 'UserSettings' 'Users can register agent identity blueprints' 'Not exposed by this tenant API' (YN $ref.usersCanRegisterAgentBlueprints) Manual $link }
     }
     catch { Add-Result 'UserSettings' 'Users can register agent identity blueprints' "Not readable: $($_.Exception.Message)" (YN $ref.usersCanRegisterAgentBlueprints) Manual $link }
-    try {
-        $ux = 'https://graph.microsoft.com/beta/admin/entra/uxSetting'
-        $u = Graph GET $ux
-        $adminWhy = 'When this is Yes, people who are not administrators cannot browse the Microsoft Entra admin center (entra.microsoft.com or the Azure portal) to look up users, groups and apps. Group and app owners also cannot manage what they own there. It reduces what an attacker can learn from a compromised normal account.'
-        $adminNow = if ("$($u.restrictNonAdminAccess)" -eq 'true') { 'Yes' } else { 'No' }
-        Compare-Setting 'UserSettings' 'Restrict access to Microsoft Entra admin center' $adminNow $ref.restrictAdminCenter {
-            $want = if ($ref.restrictAdminCenter -eq 'Yes') { 'true' } else { 'false' }
-            Graph PATCH $ux @{ restrictNonAdminAccess = $want } | Out-Null
-            $chk = Graph GET $ux
-            if ("$($chk.restrictNonAdminAccess)" -ne $want) { throw 'Microsoft accepted the request but the setting did not change. Turn it on in the Entra admin center (Entra ID > Users > User settings > Administration center).' }
-        } $link $adminWhy
-    }
-    catch { Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' "Could not be read or set: $($_.Exception.Message)" $ref.restrictAdminCenter Manual $link 'Microsoft only allows this setting to be changed by a signed-in Global Administrator, and the request was refused. Turn it on manually: Entra ID > Users > User settings > Administration center > Restrict access to Microsoft Entra admin center = Yes.' }
+    Add-Result 'UserSettings' 'Restrict access to Microsoft Entra admin center' 'Cannot be read automatically (no Microsoft API)' $ref.restrictAdminCenter Manual $link 'When this is Yes, people who are not administrators cannot browse the Microsoft Entra admin center (entra.microsoft.com or the Azure portal) to look up users, groups and apps. Microsoft offers no API for this setting, so turn it on manually: Entra ID > Users > User settings > Administration center > Restrict access to Microsoft Entra admin center = Yes.'
     Add-Result 'UserSettings' 'Allow users to connect work or school account with LinkedIn' 'Cannot be read automatically (no Microsoft API)' "$($ref.linkedIn) - business/privacy decision" Manual $link
     Add-Result 'UserSettings' 'Show keep user signed in' 'Cannot be read automatically (no Microsoft API)' $ref.showKeepSignedIn Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding'
 }
@@ -778,20 +766,6 @@ function Step-BreakGlass {
         else { Add-Result 'BreakGlass' "Administrative unit $BreakGlassAuName exists" 'No' 'Yes' Drift $auLink 'A restricted management administrative unit makes the break-glass group and accounts editable only by the trusted admins you assign to it.' $BreakGlassPdf $pdf }
     }
     $au = $script:bgAu
-    if ($au) {
-        Invoke-Part 'BreakGlass' 'Administrator of the administrative unit' {
-            $nm = "You ($script:MeUpn) are Groups Administrator and User Administrator of $BreakGlassAuName"
-            $roleLink = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits"
-            $roleWhy = 'Objects inside a restricted management unit can only be changed or deleted by administrators assigned to that unit, even Global Administrators cannot. The account that runs this script is added as Groups Administrator and User Administrator of the unit so that it can manage (and later remove) the protected group and accounts.'
-            $haveAll = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/scopedRoleMembers").value | Where-Object { $_.roleMemberInfo.id -eq $script:MeId -and $_.roleId -in 'fdd7a751-b60b-444a-984c-02652fe8fa1c', 'fe930be7-5e62-47db-91af-98c3a49a38b1' }).Count -ge 2
-            if ($haveAll) { Add-Result 'BreakGlass' $nm 'Yes' 'Yes' Compliant $roleLink $roleWhy }
-            elseif (Confirm-Change "Make $script:MeUpn Groups Administrator and User Administrator of $BreakGlassAuName") {
-                [void](Grant-AuAdmin $au.id)
-                Add-Result 'BreakGlass' $nm 'No' 'Assigned' Fixed $roleLink $roleWhy
-            }
-            else { Add-Result 'BreakGlass' $nm 'No' 'Yes' Drift $roleLink $roleWhy }
-        }
-    }
     if ($au -and $g) {
         Invoke-Part 'BreakGlass' 'Group in administrative unit' {
             $nm = "Group $BreakGlassGroupName is inside administrative unit $BreakGlassAuName"
@@ -1995,16 +1969,17 @@ function Remove-Items([string]$Step, [string]$Noun, $Items, [scriptblock]$Name, 
 
 function Grant-AuAdmin([string]$AuId) {
     $added = 0
-    foreach ($role in @{ 'Groups Administrator' = 'fdd7a751-b60b-444a-984c-02652fe8fa1c'; 'User Administrator' = 'fe930be7-5e62-47db-91af-98c3a49a38b1' }.GetEnumerator()) {
-        $have = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AuId/scopedRoleMembers").value | Where-Object { $_.roleId -eq $role.Value -and $_.roleMemberInfo.id -eq $script:MeId })
+    foreach ($tpl in 'fdd7a751-b60b-444a-984c-02652fe8fa1c', 'fe930be7-5e62-47db-91af-98c3a49a38b1') {
+        $dr = @((Graph GET "https://graph.microsoft.com/v1.0/directoryRoles?`$filter=roleTemplateId eq '$tpl'").value | Select-Object -First 1)[0]
+        if (-not $dr) { $dr = Graph POST 'https://graph.microsoft.com/v1.0/directoryRoles' @{ roleTemplateId = $tpl } }
+        $have = @((Graph GET "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AuId/scopedRoleMembers").value | Where-Object { $_.roleId -eq $dr.id -and $_.roleMemberInfo.id -eq $script:MeId })
         if (-not $have.Count) {
-            Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AuId/scopedRoleMembers" @{ roleId = $role.Value; roleMemberInfo = @{ id = $script:MeId } } | Out-Null
+            Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$AuId/scopedRoleMembers" @{ roleId = $dr.id; roleMemberInfo = @{ id = $script:MeId } } | Out-Null
             $added++
         }
     }
     $added
 }
-
 function Remove-FromRestrictedUnit([string]$ObjectId) {
     try {
         $q = [uri]::EscapeDataString("displayName eq '$BreakGlassAuName'")
@@ -2181,11 +2156,6 @@ function Step-WipeTenantSettings {
         }
     }
     catch { Add-Result 'UserSettings' 'Reading the user settings' $_.Exception.Message 'Readable' Error 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/UserSettings' }
-    try {
-        $ux = 'https://graph.microsoft.com/beta/admin/entra/uxSetting'
-        if ("$((Graph GET $ux).restrictNonAdminAccess)" -eq 'true') { & $add 'UserSettings' 'Restrict access to Microsoft Entra admin center: from Yes to No' { Graph PATCH $ux @{ restrictNonAdminAccess = 'false' } | Out-Null } }
-    }
-    catch { }
     try {
         $wUri = 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
         if ((Graph GET $wUri).isEnabled -eq $true) { & $add 'Consent' 'Admin consent request workflow: from enabled to disabled' { Graph PUT $wUri @{ isEnabled = $false; notifyReviewers = $false; remindersEnabled = $false; requestDurationInDays = 30; reviewers = @() } | Out-Null } }
