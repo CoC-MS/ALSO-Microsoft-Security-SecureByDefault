@@ -27,8 +27,8 @@ param(
     [ValidateSet('Discover', 'Enforce', 'Wipe')][string]$Mode = 'Discover',
     [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual')]
-    [string[]]$Steps = @('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
-        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual'),
+    [string[]]$Steps = @('Licensing', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'AuditLog', 'Purview', 'GuideManual'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
     [string]$PilotGroupId,
@@ -219,6 +219,7 @@ if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be cha
 
 Initialize-Module Microsoft.Graph.Authentication
 $needsExo = [bool](($Mode -ne 'Wipe') -and ($Steps | Where-Object { $_ -in 'AuditLog', 'MdoPresets' }))
+$script:WantAudit = [bool]($Steps -contains 'AuditLog')
 $needsPurview = [bool]($Steps -contains 'Purview')
 $needsSpo = [bool]($needsPurview -and $Mode -ne 'Wipe')
 $signInCount = 1 + [int]$needsExo + [int]$needsPurview + [int]$needsSpo
@@ -2236,6 +2237,8 @@ function Invoke-Wipe {
 
 $basicSkip = 'IntuneEnrollment', 'IntunePolicies', 'ConditionalAccess', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
 if ($Mode -eq 'Wipe') { Invoke-Wipe; $Steps = @() }
+$Steps = @($Steps | Where-Object { $_ -ne 'AuditLog' })
+if ($script:WantAudit) { $pi = [array]::IndexOf($Steps, 'Purview'); if ($pi -ge 0) { $Steps = @($Steps | Select-Object -First $pi) + 'AuditLog' + @($Steps | Select-Object -Skip $pi) } else { $Steps += 'AuditLog' } }
 foreach ($s in $Steps) {
     if ($s -in $basicSkip) {
         $tier = $null
@@ -2257,12 +2260,12 @@ $html = Join-Path $OutputPath "sbd-$Mode-$stamp.html"
 $script:Results | ConvertTo-Json -Depth 4 | Set-Content $json -Encoding UTF8
 $enc = { param($s) [Net.WebUtility]::HtmlEncode("$s") }
 $cats = [ordered]@{
-    AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
+    SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
     ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
-    IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
+    IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; AuditLog = 'Data: Microsoft Purview'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
 $reportResults = @($script:Results | Where-Object Step -ne 'Licensing')
