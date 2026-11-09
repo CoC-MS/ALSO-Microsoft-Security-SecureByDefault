@@ -811,7 +811,8 @@ function Step-BreakGlass {
         default { "$bad item(s) still need to be created or fixed." }
     }
     Set-Group 'Summary'
-    Add-Result 'BreakGlass' 'Break-glass readiness' $outcome 'Ready' $(if ($outcome -eq 'Ready') { 'Compliant' } else { 'Drift' }) $link "$verdict $($lines -join ' ') Sections: 1 existing accounts, 2 their checks, 3 to 6 the two ALSO accounts, 7 what a person must do." $BreakGlassPdf $pdf    $sum = $script:Results[$script:Results.Count - 1]
+    Add-Result 'BreakGlass' 'Break-glass readiness' $outcome 'Ready' $(if ($outcome -eq 'Ready') { 'Compliant' } else { 'Drift' }) $link "$verdict $($lines -join ' ') Sections: 1 existing accounts, 2 their checks, 3 to 6 the two ALSO accounts, 7 what a person must do." $BreakGlassPdf $pdf
+    $sum = $script:Results[$script:Results.Count - 1]
     $script:Results.RemoveAt($script:Results.Count - 1)
     $sum.Group = '0. Summary'
     $script:Results.Insert($start, $sum)
