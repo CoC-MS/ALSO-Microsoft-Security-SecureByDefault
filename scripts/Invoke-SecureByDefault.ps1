@@ -463,25 +463,28 @@ function Step-AuditLog {
     if (-not $cfg) { Connect-ExoNow; $cfg = Get-AdminAuditLogConfig }
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
         Connect-ExoNow
-        $hydrate = {
-            Write-Host '   Preparing the tenant for this change (one time, about 30-60 seconds)...' -ForegroundColor DarkGray
-            try { Enable-OrganizationCustomization -ErrorAction Stop }
-            catch { if ("$($_.Exception.Message)" -notmatch 'already|DSAlreadyExist') { throw "Could not prepare the tenant: $($_.Exception.Message)" } }
-            Start-Sleep -Seconds 15
-        }
-        $oc = $null; try { $oc = Get-OrganizationConfig -ErrorAction Stop } catch { }
-        if ($oc -and $oc.IsDehydrated) { & $hydrate; $hydrated = $true } else { $hydrated = $false }
-        $ok = $false
         $prevEap = $global:ErrorActionPreference; $global:ErrorActionPreference = 'Stop'
-        foreach ($try in 1..3) {
-            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $ok = $true; break }
-            catch {
-                $m = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-                if (-not $hydrated -and $m -match 'Enable-OrganizationCustomization') { & $hydrate; $hydrated = $true; continue }
-                if ($try -eq 3) { $global:ErrorActionPreference = $prevEap; throw "Set-AdminAuditLogConfig failed: $m" }
-                Start-Sleep -Seconds 10
+        $oc = $null; try { $oc = Get-OrganizationConfig } catch { }
+        if (-not ($oc -and $oc.IsDehydrated -eq $false)) {
+            Write-Host '   Step 1: preparing the tenant (Enable-OrganizationCustomization). One time, can take a few minutes...' -ForegroundColor DarkGray
+            try { Enable-OrganizationCustomization } catch { if ("$($_.Exception.Message)" -notmatch 'already|DSAlreadyExist') { Write-Host "   Note: $($_.Exception.Message)" -ForegroundColor DarkGray } }
+            foreach ($w in 1..40) {
+                $chk = $null; try { $chk = Get-OrganizationConfig } catch { }
+                if ($chk -and $chk.IsDehydrated -eq $false) { break }
+                Start-Sleep -Seconds 15
             }
         }
+        Write-Host '   Step 2: turning on the audit log...' -ForegroundColor DarkGray
+        $done = $false; $lastErr = ''
+        foreach ($try in 1..20) {
+            try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop; $done = $true; break }
+            catch {
+                $lastErr = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+                if ($lastErr -notmatch 'Enable-OrganizationCustomization|temporar|try again|timeout') { break }
+                Start-Sleep -Seconds 30
+            }
+        }
+        if (-not $done) { $global:ErrorActionPreference = $prevEap; throw "Set-AdminAuditLogConfig failed: $lastErr" }
         $setCmd = Get-Command Set-AdminAuditLogConfig -ErrorAction SilentlyContinue
         $getCmd = if ($setCmd) { Get-Command Get-AdminAuditLogConfig -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -eq $setCmd.Source } | Select-Object -First 1 }
         if (-not $getCmd) { $getCmd = Get-Command Get-AdminAuditLogConfig -ErrorAction SilentlyContinue | Select-Object -First 1 }
