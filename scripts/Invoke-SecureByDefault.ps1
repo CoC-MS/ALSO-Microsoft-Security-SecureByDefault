@@ -8,7 +8,6 @@
   each change is confirmed step by step (-Force skips prompts, -WhatIf dry-runs).
 
 
-.PARAMETER IncludeSlowPurviewReads  Also read insider risk and communication compliance policies (can stall on tenants where they are not set up).
 .PARAMETER Mode     Discover (read-only, default), Enforce, or Wipe (removes what this script deployed; asks per category: all, one by one or none).
 .PARAMETER Steps    Subset of step ids. Default: all.
 .PARAMETER SharePointAdminUrl  e.g. https://contoso-admin.sharepoint.com (derived if omitted).
@@ -36,7 +35,6 @@ param(
     [string]$BreakGlassGroupName = 'SRV-EA-ACCOUNTS',
     [string]$BreakGlassAuName = 'Identity-Governance-AU',
     [string[]]$AdminConsentReviewerIds,
-    [switch]$IncludeSlowPurviewReads,
     [switch]$Force
 )
 
@@ -131,6 +129,31 @@ function Compare-Setting {
     else { Add-Result $Step $Setting $Current $Expected Drift $Link $Detail $Doc $DocText }
 }
 
+$script:IppsTok = $null; $script:IppsWorker = $null
+function Wait-Worker($ps, [int]$Seconds, [string]$What) {
+    $ar = $ps.BeginInvoke()
+    if (-not $ar.AsyncWaitHandle.WaitOne($Seconds * 1000)) {
+        try { [void]$ps.BeginStop($null, $null) } catch {}
+        throw "$What did not answer within $Seconds seconds and was skipped"
+    }
+    $out = @($ps.EndInvoke($ar))
+    if ($ps.Streams.Error.Count) { throw $ps.Streams.Error[0].Exception.Message }
+    $out
+}
+function Invoke-Timed([string]$Code, [int]$Seconds = 60) {
+    if (-not $script:IppsTok) { return @(& ([scriptblock]::Create($Code))) }
+    if (-not $script:IppsWorker) {
+        $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+        $ps = [powershell]::Create(); $ps.Runspace = $rs
+        [void]$ps.AddScript('param($t,$o) Import-Module ExchangeOnlineManagement -ErrorAction Stop; Connect-IPPSSession -AccessToken $t -Organization $o -ShowBanner:$false -ErrorAction Stop').AddArgument($script:IppsTok).AddArgument($script:IppsOrg)
+        try { [void](Wait-Worker $ps 120 'Connecting to Purview') } catch { try { $rs.Dispose() } catch {}; throw }
+        $script:IppsWorker = $rs
+    }
+    $ps = [powershell]::Create(); $ps.Runspace = $script:IppsWorker
+    [void]$ps.AddScript($Code)
+    try { Wait-Worker $ps $Seconds 'Purview' }
+    catch { if ($_.Exception.Message -like '*skipped') { $script:IppsWorker = $null }; throw }
+}
 function Invoke-Safe([string]$Step, [scriptblock]$Body) {
     try { & $Body } catch { Add-Result $Step 'Step could not be completed' "$($_.Exception.Message) (script line $($_.InvocationInfo.ScriptLineNumber))" 'Completed' Error $null 'The step stopped unexpectedly. The checks before this point are still listed. Send this message to ALSO if it persists.' }
 }
@@ -318,7 +341,7 @@ if ($needsPurview) {
     $ippsOk = $false
     try {
         $ippsTok = Get-BrowserToken @('.default') $false 'fb78d390-0c51-40cd-8e17-fdbfab77341b' 'https://ps.compliance.protection.outlook.com'         'Microsoft Purview' $(if ($needsSpo) { 'SharePoint admin center' } else { '' })
-        Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true
+        Connect-IPPSSession -AccessToken $ippsTok -Organization $initialDomain -ShowBanner:$false -ErrorAction Stop; $ippsOk = $true; $script:IppsTok = $ippsTok; $script:IppsOrg = $initialDomain
     }
     catch { Write-Host "  Direct sign-in was not accepted ($($_.Exception.Message)). Using Microsoft's own sign-in window instead." -ForegroundColor DarkGray }
     if (-not $ippsOk) { try { Connect-IPPSSession -ShowBanner:$false -DisableWAM -ErrorAction Stop }
@@ -1457,7 +1480,7 @@ function Step-Purview {
 
         $g2 = 'ALSO baseline (suggested): Sensitivity labels'; $g2x = 'Your existing tenant: Sensitivity labels'
         $labels = @()
-        Write-Host '   ...reading sensitivity labels' -ForegroundColor DarkGray; try { $labels = @(Get-Label -ErrorAction Stop) } catch { & $addRow $g2 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'Make sure the signed-in account is Global Administrator or Compliance Administrator.' $lbl $false }
+        Write-Host '   ...reading sensitivity labels' -ForegroundColor DarkGray; try { $labels = @(Invoke-Timed 'Get-Label -ErrorAction Stop') } catch { & $addRow $g2 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'Make sure the signed-in account is Global Administrator or Compliance Administrator.' $lbl $false }
         $find = { param($c, $parent)
             $labels | Where-Object { ($_.Name -eq $c.Name -or $_.DisplayName -eq $c.DisplayName) -and $(if ($parent) { "$($_.ParentId)" -eq "$($parent.Guid)" } else { -not $_.ParentId }) } | Select-Object -First 1 }
         $resolved = @{}
@@ -1484,7 +1507,7 @@ function Step-Purview {
 
         $g3 = 'ALSO baseline (suggested): Label policy'; $g3x = 'Your existing tenant: Label policies'
         try {
-            Write-Host '   ...reading label policies' -ForegroundColor DarkGray; $lps = @(Get-LabelPolicy -ErrorAction Stop)
+            Write-Host '   ...reading label policies' -ForegroundColor DarkGray; $lps = @(Invoke-Timed 'Get-LabelPolicy -ErrorAction Stop')
             $c = $config.LabelPolicy
             $lp = $lps | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             $d = @()
@@ -1510,7 +1533,7 @@ function Step-Purview {
         catch { & $addRow $g3 'Label policy' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $lpL $false }
 
         $dlp = @(); $rules = @()
-        Write-Host '   ...reading DLP policies and rules (can take a few minutes)' -ForegroundColor DarkGray; try { $dlp = @(Get-DlpCompliancePolicy -ErrorAction Stop); $rules = @(Get-DlpComplianceRule -ErrorAction Stop) }
+        Write-Host '   ...reading DLP policies and rules (can take a few minutes)' -ForegroundColor DarkGray; try { $dlp = @(Invoke-Timed 'Get-DlpCompliancePolicy -ErrorAction Stop' 180); $rules = @(Invoke-Timed 'Get-DlpComplianceRule -ErrorAction Stop' 180) }
         catch { & $addRow $g7 'Data loss prevention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $dlpL $false }
         $rulesOf = { param($n) $rules | Where-Object { "$($_.ParentPolicyName)" -eq $n -or "$($_.Policy)" -eq $n } }
         $sitJson = { param($r) if ($r) { ($r | ForEach-Object { $_.ContentContainsSensitiveInformation } | ConvertTo-Json -Depth 12 -Compress) } else { '' } }
@@ -1583,12 +1606,12 @@ function Step-Purview {
 
         $g8 = 'ALSO baseline (suggested): Retention (optional)'; $g8x = 'Your existing tenant: Retention policies'
         try {
-            Write-Host '   ...reading retention policies' -ForegroundColor DarkGray; $ret = @(Get-RetentionCompliancePolicy -ErrorAction Stop)
+            Write-Host '   ...reading retention policies' -ForegroundColor DarkGray; $ret = @(Invoke-Timed 'Get-RetentionCompliancePolicy -ErrorAction Stop')
             $c = $config.Retention
             $p = $ret | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             if ($p) {
                 $d = @()
-                Write-Host '   ...reading retention rule' -ForegroundColor DarkGray; $r = @(Get-RetentionComplianceRule -Policy $p.Name -ErrorAction SilentlyContinue) | Select-Object -First 1
+                Write-Host '   ...reading retention rule' -ForegroundColor DarkGray; $r = $null; try { $r = @(Invoke-Timed "Get-RetentionComplianceRule -Policy '$($p.Name -replace "'","''")' -ErrorAction Stop" 45) | Select-Object -First 1 } catch {}
                 if ($r -and $null -ne $r.RetentionDuration -and "$($r.RetentionDuration)" -ne "$($c.DurationDays)") { $d += "keeps data $($r.RetentionDuration) days, baseline expects $($c.DurationDays)" }
                 if ($r -and $r.RetentionComplianceAction -and "$($r.RetentionComplianceAction)" -ne "$($c.Action)") { $d += "action is $($r.RetentionComplianceAction), baseline expects $($c.Action)" }
                 & $emit $g8 "Optional: $($c.Name)" $true $d 'Keeps Exchange mail for seven years and then deletes it. Optional, only after legal review.' $retL $null
@@ -1600,14 +1623,13 @@ function Step-Purview {
 
         $g9 = 'Your existing tenant: Other Purview protections'
         $extras = @(
-            @{ N = 'Auto-labeling policies'; C = { @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop) }; D = 'Auto-labeling applies labels to content that contains sensitive information, without relying on users.'; L = 'https://purview.microsoft.com/informationprotection/autolabeling' }
-            @{ N = 'Insider risk management policies'; S = $true; C = { @(Get-InsiderRiskPolicy -ErrorAction Stop) }; D = 'Detects risky activity such as data leaks by departing employees. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/insiderriskmanagement' }
-            @{ N = 'Communication compliance policies'; S = $true; C = { @(Get-SupervisoryReviewPolicyV2 -ErrorAction Stop) }; D = 'Reviews messages for policy violations. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/communicationcompliance' }
+            @{ N = 'Auto-labeling policies'; C = 'Get-AutoSensitivityLabelPolicy -ErrorAction Stop'; D = 'Auto-labeling applies labels to content that contains sensitive information, without relying on users.'; L = 'https://purview.microsoft.com/informationprotection/autolabeling' }
+            @{ N = 'Insider risk management policies'; C = 'Get-InsiderRiskPolicy -ErrorAction Stop'; D = 'Detects risky activity such as data leaks by departing employees. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/insiderriskmanagement' }
+            @{ N = 'Communication compliance policies'; C = 'Get-SupervisoryReviewPolicyV2 -ErrorAction Stop'; D = 'Reviews messages for policy violations. Needs Microsoft 365 E5 or the Purview suite.'; L = 'https://purview.microsoft.com/communicationcompliance' }
         )
         foreach ($x in $extras) {
-            if ($x.S -and -not $IncludeSlowPurviewReads) { & $addRow $g9 $x.N 'Not read in this scan' 'Considered for your organization' Info "$($x.D) It is skipped by default because Microsoft's read command can stall; add -IncludeSlowPurviewReads to read it." $x.L $false; continue }
             Write-Host "   ...reading $($x.N)" -ForegroundColor DarkGray
-            try { $cc = & $x.C; & $addRow $g9 $x.N $(if ($cc.Count) { "$($cc.Count): $(($cc | ForEach-Object { $_.Name }) -join '; ')" } else { 'None' }) 'Considered for your organization' Info $x.D $x.L $false }
+            try { $cc = @(Invoke-Timed $x.C 40); & $addRow $g9 $x.N $(if ($cc.Count) { "$($cc.Count): $(($cc | ForEach-Object { $_.Name }) -join '; ')" } else { 'None' }) 'Considered for your organization' Info $x.D $x.L $false }
             catch { & $addRow $g9 $x.N 'Not available in this tenant or not readable' 'Considered for your organization' Info $x.D $x.L $false }
         }
         $i = 0
