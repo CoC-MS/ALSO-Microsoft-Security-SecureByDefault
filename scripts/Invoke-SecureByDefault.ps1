@@ -26,9 +26,9 @@
 param(
     [ValidateSet('Discover', 'Enforce', 'Wipe')][string]$Mode = 'Discover',
     [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
-        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual')]
+        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual')]
     [string[]]$Steps = @('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
-        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual'),
+        'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
     [string]$PilotGroupId,
@@ -949,11 +949,53 @@ function Step-MdoPresets {
     }
     if (-not $found) {
         Add-Result 'MdoPresets' 'Standard preset security policy' 'Not configured' 'Standard preset turned on for all recipients' Manual $link 'Standard preset protection applies Microsoft''s recommended anti-spam, anti-phishing, Safe Links and Safe Attachments settings to all recipients in one step. Microsoft provides no API to create it, so turn it on once in the Defender portal. Then read ALSO''s recommendations for Defender for Office 365 and for SPF, DKIM and DMARC.' ($GuideBase + '#office-protection') 'ALSO guide: Defender for Office 365 protection (Email, apps and collaboration, step 1)'
-        Add-Result 'MdoPresets' 'SPF, DKIM and DMARC email authentication' 'Cannot be checked automatically' 'Configured for every sending domain' Manual 'https://security.microsoft.com/authentication' 'SPF, DKIM and DMARC stop others from spoofing your domains and improve delivery of your own mail. Verify each domain in the Defender portal and in your DNS.' ($GuideBase + '#email-authentication') 'ALSO guide: SPF, DKIM and DMARC (Email, apps and collaboration, step 2)'
         Write-Host '   Microsoft does not allow creating the preset policies through any API or PowerShell cmdlet. Turn Standard protection on once in the Defender portal (Preset security policies > Standard protection > Manage). After that, this script can verify and enable/disable it.' -ForegroundColor DarkGray
     }
 }
 
+function Get-DnsRecords([string]$Name, [string]$Type) {
+    try {
+        $r = Invoke-RestMethod -Uri "https://dns.google/resolve?name=$Name&type=$Type" -TimeoutSec 10 -ErrorAction Stop
+        @($r.Answer | Where-Object { $_.data } | ForEach-Object { ("$($_.data)").Trim('"') -replace '"\s*"', '' })
+    }
+    catch { $null }
+}
+
+function Step-EmailAuth {
+    Write-Step 'Email authentication (SPF, DKIM, DMARC)' 'Looks up the public DNS records of your domains. Recommendations only - nothing is changed.'
+    $link = 'https://security.microsoft.com/authentication'
+    $doc = $GuideBase + '#email-authentication'; $docText = 'ALSO guide: SPF, DKIM and DMARC (Email, apps and collaboration, step 2)'
+    $domains = @((Graph GET 'https://graph.microsoft.com/v1.0/domains').value | Where-Object { $_.isVerified -and $_.name -notlike '*.onmicrosoft.com' -and $_.supportedServices -contains 'Email' })
+    if (-not $domains.Count) {
+        Add-Result 'EmailAuth' 'Custom email domains' 'None found (only the onmicrosoft.com domain)' 'SPF, DKIM and DMARC set for each sending domain' Info $link 'No verified custom domain with email enabled was found, so there is nothing to scan. When you add a domain, publish SPF, DKIM and DMARC for it.' $doc $docText
+        return
+    }
+    foreach ($d in $domains) {
+        $n = $d.name
+        Set-Group "Domain: $n"
+        $txt = Get-DnsRecords $n 'TXT'
+        if ($null -eq $txt) { Add-Result 'EmailAuth' "$n - DNS lookup" 'Could not be looked up from this computer' 'Records readable' Manual $link 'The public DNS lookup failed (no internet access to dns.google or a proxy blocks it). Check SPF, DKIM and DMARC for this domain by hand.' $doc $docText; continue }
+        $spf = @($txt | Where-Object { $_ -match '^v=spf1' })
+        if (-not $spf.Count) { Add-Result 'EmailAuth' "$n - SPF" 'No SPF record' 'One SPF record that includes spf.protection.outlook.com' Manual $link 'SPF lists the servers allowed to send mail for your domain. Recommended record: v=spf1 include:spf.protection.outlook.com -all. Publish it as a TXT record at your DNS provider.' $doc $docText }
+        elseif ($spf.Count -gt 1) { Add-Result 'EmailAuth' "$n - SPF" "$($spf.Count) SPF records" 'Exactly one SPF record' Manual $link 'A domain must have only one SPF record; with several, receivers treat SPF as failed. Merge them into one.' $doc $docText }
+        else {
+            $s = $spf[0]
+            $why = @(); if ($s -notmatch 'spf\.protection\.outlook\.com') { $why += 'it does not include spf.protection.outlook.com (needed if Microsoft 365 sends your mail)' }; if ($s -notmatch '[-~]all\s*$') { $why += 'it does not end with -all or ~all' } elseif ($s -match '~all\s*$') { $why += 'it ends with ~all (soft fail); -all is recommended once all senders are listed' }
+            if ($why.Count) { Add-Result 'EmailAuth' "$n - SPF" "Present: $s" 'Includes Microsoft 365 and ends with -all' Manual $link "Review the SPF record: $($why -join '; ')." $doc $docText }
+            else { Add-Result 'EmailAuth' "$n - SPF" "Present: $s" 'Includes Microsoft 365 and ends with -all' Compliant $link 'SPF is published and follows the recommendation.' $doc $docText }
+        }
+        $sel = @('selector1', 'selector2' | Where-Object { Get-DnsRecords "$_._domainkey.$n" 'CNAME' })
+        if ($sel.Count -eq 2) { Add-Result 'EmailAuth' "$n - DKIM" 'Both Microsoft 365 DKIM records found' 'selector1 and selector2 published' Compliant $link 'DKIM signs outgoing mail so receivers can prove it was not altered. Also check in the Defender portal that signing is switched on for the domain.' $doc $docText }
+        else { Add-Result 'EmailAuth' "$n - DKIM" "$($sel.Count) of 2 DKIM records found" 'selector1 and selector2 published, signing on' Manual $link 'Publish the two CNAME records selector1._domainkey and selector2._domainkey (values are shown in the Defender portal under Email authentication settings > DKIM), then switch signing on for the domain.' $doc $docText }
+        $dm = @(Get-DnsRecords "_dmarc.$n" 'TXT' | Where-Object { $_ -match '^v=DMARC1' })
+        if (-not $dm.Count) { Add-Result 'EmailAuth' "$n - DMARC" 'No DMARC record' 'DMARC published with a policy of quarantine or reject' Manual $link 'DMARC tells receivers what to do with mail that fails SPF and DKIM. Start with a TXT record at _dmarc.<domain>: v=DMARC1; p=none; rua=mailto:<your address> to collect reports, then move to p=quarantine and p=reject.' $doc $docText }
+        else {
+            $p = if ($dm[0] -match 'p=(\w+)') { $Matches[1].ToLower() } else { '' }
+            if ($p -in 'quarantine', 'reject') { Add-Result 'EmailAuth' "$n - DMARC" "Present, policy $p" 'Policy quarantine or reject' Compliant $link 'DMARC is published with an enforcing policy.' $doc $docText }
+            else { Add-Result 'EmailAuth' "$n - DMARC" "Present, policy $(if ($p) { $p } else { 'unknown' })" 'Policy quarantine or reject' Manual $link 'The policy only monitors. Once the reports show that all legitimate senders pass, move to p=quarantine and then p=reject.' $doc $docText }
+        }
+    }
+}
 function Step-DefenderEndpoint {
     Write-Step 'Defender for Endpoint & Intune connection' 'Verify provisioning and connector status.'
     $atp = 'https://intune.microsoft.com/#view/Microsoft_Intune_Workflows/SecurityManagementMenu/~/atp'
@@ -2182,7 +2224,7 @@ $cats = [ordered]@{
     AuditLog = 'Auditing & compliance'; SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
-    MdoPresets = 'Defender'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
+    MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
     ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
     IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
 }
