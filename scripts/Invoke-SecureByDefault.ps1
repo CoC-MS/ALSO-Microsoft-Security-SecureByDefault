@@ -399,11 +399,21 @@ function Step-Licensing {
     Write-Host "   $($desc[$lic.Tier])" -ForegroundColor Cyan
 }
 
+function Invoke-ExoRest([string]$Cmdlet, [hashtable]$Params = @{}) {
+    if (-not $script:exTok) { throw 'No Exchange token available.' }
+    $body = @{ CmdletInput = @{ CmdletName = $Cmdlet; Parameters = $Params } } | ConvertTo-Json -Depth 6
+    $r = Invoke-RestMethod -Method Post -Uri "https://outlook.office365.com/adminapi/beta/$($org.id)/InvokeCommand" -Headers @{ Authorization = "Bearer $($script:exTok)"; 'Content-Type' = 'application/json'; 'X-AnchorMailbox' = "UPN:$($script:MeUpn)" } -Body $body -TimeoutSec 60 -ErrorAction Stop
+    @($r.value)
+}
+
 function Step-AuditLog {
     Write-Step 'Unified audit log' 'Required for investigations, Defender and Purview.'
-    $cfg = Get-AdminAuditLogConfig
+    Write-Host '   ...reading the audit log setting from Exchange' -ForegroundColor DarkGray
+    $cfg = $null
+    try { $cfg = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { Write-Host "   Direct read did not work ($($_.Exception.Message)); using the Exchange module." -ForegroundColor DarkGray }
+    if (-not $cfg) { $cfg = Get-AdminAuditLogConfig }
     Compare-Setting 'AuditLog' 'UnifiedAuditLogIngestionEnabled' $cfg.UnifiedAuditLogIngestionEnabled 'True' {
-        try { Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop }
+        try { try { [void](Invoke-ExoRest 'Set-AdminAuditLogConfig' @{ UnifiedAuditLogIngestionEnabled = $true }) } catch { if ("$($_.Exception.Message)" -match 'Enable-OrganizationCustomization') { throw }; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true -ErrorAction Stop } }
         catch {
             if ("$($_.Exception.Message)" -notmatch 'Enable-OrganizationCustomization') { throw }
             Write-Host '   Exchange needs "organization customization" turned on first. Doing that now (can take a minute)...' -ForegroundColor DarkGray
@@ -415,7 +425,7 @@ function Step-AuditLog {
             }
             if (-not $done) { throw 'Organization customization is still being enabled. Run the script again in a few minutes.' }
         }
-        if (-not (Get-AdminAuditLogConfig).UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
+        $chk = $null; try { $chk = Invoke-ExoRest 'Get-AdminAuditLogConfig' | Select-Object -First 1 } catch { $chk = Get-AdminAuditLogConfig }; if (-not $chk.UnifiedAuditLogIngestionEnabled) { throw 'The setting was sent but the audit log still reports Off. It can take up to an hour to show On.' }
     } 'https://purview.microsoft.com/audit/auditsearch'
 }
 
