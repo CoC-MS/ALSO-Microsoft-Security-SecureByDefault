@@ -1973,11 +1973,13 @@ function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 900) {
     $tOut = $p.StandardOutput.ReadLineAsync(); $tErr = $p.StandardError.ReadLineAsync()
     $outDone = $false; $errDone = $false
     $last = [DateTime]::UtcNow; $lastBeat = $last; $lastLine = ''
+    # Toolkit start-up banner and technical sign-in diagnostics are not useful to the person running Secure by Default.
+    $hide = '^\s*(Microsoft Purview Best Practice Deployment v|Config: |WAM broker|Note: first-time consent|MSAL DLL check)'
     while (-not ($outDone -and $errDone)) {
         $got = $false
         if (-not $outDone -and $tOut.IsCompleted) {
             $l = $tOut.Result
-            if ($null -eq $l) { $outDone = $true } else { $got = $true; $lastLine = $l; Write-Host $l; $tOut = $p.StandardOutput.ReadLineAsync() }
+            if ($null -eq $l) { $outDone = $true } else { $got = $true; if ($l -notmatch $hide) { $lastLine = $l; Write-Host $l }; $tOut = $p.StandardOutput.ReadLineAsync() }
         }
         if (-not $errDone -and $tErr.IsCompleted) {
             $l = $tErr.Result
@@ -2296,7 +2298,14 @@ function Step-Purview {
             $first = @(& $check 3>$null)
             foreach ($f in $first) { $o = $spoDrift | Where-Object { $_.Setting -eq $f.Setting }; if ($o -and $f.Status -eq 'Compliant') { $f.Status = 'Fixed'; $f.Current = $o.Current } }
         }
-    }    $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
+    }
+    $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
+    $lblRows = @($first | Where-Object { $_.Setting -match '^(Label|Sub-label): ' -and $_.Expected -eq 'Matches the ALSO baseline' })
+    if ($Mode -eq 'Enforce' -and $lblRows.Count -and -not @($lblRows | Where-Object { $_.Current -eq 'Missing' }).Count -and @($todo | Where-Object { $_.Group -match 'Sensitivity labels|Label policy' }).Count) {
+        $todo = @($todo | Where-Object { $_.Group -notmatch 'Sensitivity labels|Label policy' })
+        Add-Result 'Purview' 'Sensitivity labels step skipped' 'All baseline labels and sub-labels already exist' 'Labels exist' Info 'https://purview.microsoft.com/informationprotection/labels' 'Your tenant already has every baseline label and sub-label, so the label step (create labels, set their order, publish the label policy) is skipped. That step is the slowest part of Purview because Microsoft answers slowly there. Check the label order and the label policy in the Purview portal if anything differs from the baseline.' $doc $docText
+        Write-Host '   All sensitivity labels and sub-labels already exist - skipping the label step and continuing with the other Purview parts.' -ForegroundColor Cyan
+    }
     $final = $first
     $deployed = $false
     $retRow = @($first | Where-Object { $_.Setting -like 'Optional: BP-ALSO*' -and $_.Status -eq 'Info' })
