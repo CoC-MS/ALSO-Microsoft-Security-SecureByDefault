@@ -565,7 +565,7 @@ function Set-SpoTenantCsom([string]$Name, [bool]$Value = $true) {
         if ($Name -eq 'EnableSensitivityLabelforPDF') { Set-SPOTenant -EnableSensitivityLabelforPDF $Value -ErrorAction Stop } else { Set-SPOTenant -EnableAIPIntegration $Value -ErrorAction Stop }
         return
     }
-    [void](Invoke-SpoCsom "<ObjectPath Id=`"2`" ObjectPathId=`"1`" /><SetProperty Id=`"3`" ObjectPathId=`"1`" Name=`"$Name`"><Parameter Type=`"Boolean`">$("$Value".ToLower())</Parameter></SetProperty>" $spoTenantPath)
+    [void](Invoke-SpoCsom "<ObjectPath Id=`"2`" ObjectPathId=`"1`" /><SetProperty Id=`"3`" ObjectPathId=`"1`" Name=`"$Name`"><Parameter Type=`"Boolean`">$("$Value".ToLower())</Parameter></SetProperty><Method Name=`"Update`" Id=`"4`" ObjectPathId=`"1`" />" $spoTenantPath)
 }
 function Connect-SpoLazy {
     if ($script:SpoOk) { return }
@@ -1318,15 +1318,6 @@ function Step-DefenderEndpoint {
             else { Graph POST $cUri (@{ '@odata.type' = '#microsoft.graph.mobileThreatDefenseConnector'; id = $mdeId } + $wantT) | Out-Null }
         }
         Compare-Setting 'DefenderEndpoint' 'Allow Microsoft Defender for Endpoint to enforce Endpoint Security Configurations' $(if ($attachOn) { 'On' } else { 'Off' }) 'On' $setAttach $atp 'Lets Defender for Endpoint apply Intune endpoint security policies (antivirus, firewall, attack surface reduction) also to devices that are not enrolled in Intune. Intune shows this toggle as "off" until the connection status is Enabled, but the saved setting is kept.'
-        if ($x) {
-            $plat = [ordered]@{ windowsEnabled = 'Windows'; macEnabled = 'macOS'; androidEnabled = 'Android'; iosEnabled = 'iOS' }
-            $offP = @($plat.Keys | Where-Object { $x.$_ -ne $true })
-            $cur = if ($offP.Count) { "Off for $(($offP | ForEach-Object { $plat[$_] }) -join ', ')" } else { 'On for Windows, macOS, Android and iOS' }
-            Compare-Setting 'DefenderEndpoint' 'Use Defender device risk in compliance policies' $cur 'On for Windows, macOS, Android and iOS' {
-                $b = @{}; foreach ($k in $plat.Keys) { $b[$k] = $true }
-                Graph PATCH "$cUri/$mdeId" $b | Out-Null
-            } $atp 'Connects each platform to Defender for Endpoint, so compliance policies can mark devices with a high machine risk as non-compliant.'
-        }
     }
 }
 
@@ -1990,6 +1981,18 @@ function Step-IntunePolicies {
     catch { }
 }
 
+# Only the wording shown on screen is shortened; the toolkit itself runs unchanged.
+function Format-PvLine([string]$l) {
+    if ($l -match "^(\s*)= Found existing label '(.+?)' \(Id: .*Leaving as-is") { return "   $($Matches[1])= '$($Matches[2])' already exists, left as it is" }
+    if ($l -match "Managed parent '(.+?)' has \d+ unmanaged live sub-label\(s\): (.+?)\. They occupy") {
+        $parent = $Matches[1]
+        $own = @([regex]::Matches($Matches[2], "'([^']+)' \[Name=([^;\]]+)") | Where-Object { $script:PvBuiltIns -notcontains $_.Groups[2].Value } | ForEach-Object { "'$($_.Groups[1].Value)'" })
+        if (-not $own.Count) { return $null }
+        return "   Note: '$parent' also has your own sub-label(s) $($own -join ', '). The toolkit leaves them as they are."
+    }
+    "   $l"
+}
+
 function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 1800) {
     # Runs ALSO's Purview toolkit unchanged. Its output is passed through as it arrives, including
     # questions that do not end with a line break, so a prompt from the toolkit is always visible.
@@ -2004,7 +2007,7 @@ function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 1800) {
     $last = [DateTime]::UtcNow; $lastBeat = $last; $lastLine = ''
     $pending = ''; $shown = 0
     # Toolkit start-up banner and technical sign-in diagnostics are not useful to the person running Secure by Default.
-    $hide = '^\s*(Microsoft Purview Best Practice Deployment v|Config: |WAM broker|Note: first-time consent|MSAL DLL check)'
+    $hide = '^\s*(Microsoft Purview Best Practice Deployment v|Config: |WAM broker|Note: first-time consent|MSAL DLL check|SharePoint admin URL resolved|PowerShell: Core|Encryption rights bundle scoped)'
     while (-not ($outDone -and $errDone)) {
         $got = $false
         if (-not $outDone -and $tOut.IsCompleted) {
@@ -2016,7 +2019,7 @@ function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 1800) {
                 while (($ix = $pending.IndexOf("`n")) -ge 0) {
                     $l = $pending.Substring(0, $ix).TrimEnd("`r"); $pending = $pending.Substring($ix + 1)
                     if ($shown) { Write-Host $(if ($l.Length -gt $shown) { $l.Substring($shown) } else { '' }); $shown = 0; $lastLine = $l }
-                    elseif ($l -notmatch $hide) { if ($l.Trim()) { $lastLine = $l }; Write-Host $l }
+                    elseif ($l -notmatch $hide) { $t = Format-PvLine $l; if ($null -ne $t) { if ($t.Trim()) { $lastLine = $t }; Write-Host $t -ForegroundColor $(if ($t -match '^\s*(WARNING|Note:)') { 'Yellow' } elseif ($t -match '^   \S') { 'Cyan' } else { 'Gray' }) } }
                 }
                 $tOut = $p.StandardOutput.ReadAsync($buf, 0, $buf.Length)
             }
@@ -2103,7 +2106,7 @@ function Step-Purview {
     $yn = { param($v) if ($v) { 'On' } else { 'Off' } }
     $isTrue = { param($v) "$v" -match '^(true|1|yes)$' }
 
-    try { $tk = Get-PurviewToolkit 3>$null; $cfgPath = Join-Path $tk 'Purview\Config\PurviewConfig.psd1'; $config = Import-PowerShellDataFile $cfgPath; $config.SitDlpPolicies = @($config.SitDlpPolicies | Where-Object { $_.Name -notmatch 'Swiss|DACH' }) }
+    try { $tk = Get-PurviewToolkit 3>$null; $cfgPath = Join-Path $tk 'Purview\Config\PurviewConfig.psd1'; $config = Import-PowerShellDataFile $cfgPath; $config.SitDlpPolicies = @($config.SitDlpPolicies | Where-Object { $_.Name -notmatch 'Swiss|DACH' }); $script:PvBuiltIns = @($config.Labels | ForEach-Object { $_; $_.SubLabels } | Where-Object { $_ -and $_.BuiltInName } | ForEach-Object { "$($_.BuiltInName)" }) }
     catch { Add-Result 'Purview' 'ALSO Purview baseline configuration' "Could not be downloaded: $($_.Exception.Message)" 'Downloaded from GitHub' Error $repo 'The script compares your tenant with the baseline file in ALSO''s Purview repository. Check your internet connection and that github.com is reachable.' $doc $docText; return }
     if (-not (Get-Command Get-Label -ErrorAction SilentlyContinue)) {
         Add-Result 'Purview' 'Purview connection' 'Signed in, but the Purview commands are not available' 'Commands such as Get-Label are available' Error 'https://purview.microsoft.com' 'The sign-in worked, but the Security & Compliance commands did not load. Close PowerShell, open a new PowerShell 7 window as administrator, and run the script again. If it persists, update the ExchangeOnlineManagement module (Update-Module ExchangeOnlineManagement).' $doc $docText
@@ -2368,7 +2371,7 @@ function Step-Purview {
                 $vals = @(@($tpl.values) | ForEach-Object { @{ name = $_.name; value = $(if ($_.name -eq 'EnableMIPLabels') { 'true' } else { "$($_.defaultValue)" }) } })
                 Graph POST $guUri @{ templateId = $tpl.id; values = $vals } | Out-Null
             }
-            $re = @(& $check 3>$null)
+            $re = @(& $check 3>$null 6>$null)
             foreach ($f in $re) { if ($f.Setting -like 'Sensitivity labels for Microsoft 365 groups*' -and $f.Status -eq 'Compliant') { $f.Status = 'Fixed'; $f.Current = 'Off' } }
             $first = $re
         }
@@ -2384,7 +2387,7 @@ function Step-Purview {
                 }
                 catch { if ($s.Setting -like '*PDF*' -and $_.Exception.Message -match 'does not exist') { $script:PdfLabelBuiltIn = $true; continue }; Add-Result 'Purview' "Turning on: $($s.Setting)" $_.Exception.Message 'On' Error $spoLink 'SharePoint rejected the change. Turn it on in the SharePoint admin center.' $doc $docText }
             }
-            $first = @(& $check 3>$null)
+            $first = @(& $check 3>$null 6>$null)
             foreach ($f in $first) { $o = $spoDrift | Where-Object { $_.Setting -eq $f.Setting }; if ($o -and $f.Status -eq 'Compliant') { $f.Status = 'Fixed'; $f.Current = $o.Current } }
         }
     }
@@ -2426,7 +2429,7 @@ function Step-Purview {
                 if ($doRet) { $dArgs += '-ApplyRetention' }
                 if ($adopt) { $dArgs += '-AdoptExisting' }
                 if ($pvTier -ne 'E5') { $dArgs += '-BPOnly' }
-                Write-Host '   Deploying your Purview selection with ALSO''s Purview toolkit, unchanged. You may be asked to sign in to Exchange, Purview and SharePoint. Setting the label order is the slowest part and can take 15 minutes or more without new lines; the script is not stuck. If the toolkit asks a question, it is shown in yellow: answer it to continue.' -ForegroundColor Cyan
+                Write-Host '   Deploying with ALSO''s Purview toolkit. Sign in if a window opens. Setting the label order can take several minutes without new lines; a question from the toolkit is shown in yellow.' -ForegroundColor Cyan
                 try {
                     $res = Invoke-PvChild $dArgs 1800
                     if ($res.TimedOut) { Add-Result 'Purview' 'Deploying the Purview baseline' "Microsoft stopped answering. Last step: $($res.LastLine)" 'Deployed' Error $repo 'ALSO''s Purview toolkit was stopped after 30 minutes without any progress. Run the script again later; completed parts are not repeated.' $doc $docText }
