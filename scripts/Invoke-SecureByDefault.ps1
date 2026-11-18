@@ -2304,16 +2304,20 @@ function Step-WipeConditionalAccess {
     $caBase = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
     $stateTxt = @{ enabled = 'On'; disabled = 'Off'; enabledForReportingButNotEnforced = 'Report-only' }
     $dir = Get-GuidePackage 'conditional-access'
-    $names = @(Get-PackageJson $dir 'ConditionalAccess' | ForEach-Object { $_.Json.displayName })
+    $pkg = @(Get-PackageJson $dir 'ConditionalAccess')
+    $names = @($pkg | ForEach-Object { $_.Json.displayName })
+    $wantFp = @($pkg | ForEach-Object { Get-CaFingerprint $_.Json $false })
     Set-Group 'ALSO Conditional Access policies'
-    $pol = @(Get-AllPages $caBase | Where-Object { $_.displayName -in $names } | ForEach-Object { [pscustomobject]@{ Name = "$($_.displayName) (currently $($stateTxt["$($_.state)"]))"; Uri = "$caBase/$($_.id)" } })
+    $live = @(Get-AllPages $caBase)
+    Write-Host "   ...read $($live.Count) Conditional Access policies from the tenant and $($names.Count) ALSO policy definitions" -ForegroundColor DarkGray
+    $pol = @($live | Where-Object { $_.displayName -in $names -or (Get-CaFingerprint $_ $false) -in $wantFp } | ForEach-Object { [pscustomobject]@{ Name = "$($_.displayName) (currently $($stateTxt["$($_.state)"]))"; Uri = "$caBase/$($_.id)" } })
     Remove-Items 'ConditionalAccess' 'ALSO Conditional Access policies' $pol { param($x) $x.Name } { param($x) Graph DELETE $x.Uri | Out-Null } $link 'Policies that are switched on stop protecting users as soon as they are removed. Only policies with the exact ALSO names are listed; your own policies are never touched.'
 
     Set-Group 'Authentication contexts'
     $ctxUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences'
     $ctx = @()
     foreach ($c in @(Get-PackageJson $dir 'AuthenticationContext')) {
-        try { $have = Graph GET "$ctxUri/$($c.Json.id)"; if ($have.id) { $ctx += [pscustomobject]@{ Name = "Authentication context: $($have.displayName)"; Uri = "$ctxUri/$($have.id)" } } } catch { }
+        try { $have = Graph GET "$ctxUri/$($c.Json.id)"; if ($have.id) { $ctx += [pscustomobject]@{ Name = "Authentication context: $($have.displayName)"; Uri = "$ctxUri/$($have.id)" } } } catch { if ("$($_.Exception.Message)" -notmatch 'NotFound|404|does not exist') { Write-Host "   Could not read authentication context $($c.Json.id): $($_.Exception.Message)" -ForegroundColor Yellow } }
     }
     Remove-Items 'ConditionalAccess' 'ALSO authentication contexts' $ctx { param($x) $x.Name } { param($x) Graph DELETE $x.Uri | Out-Null } $link 'An authentication context cannot be removed while a Conditional Access policy still uses it. Remove the policies first.'
 
