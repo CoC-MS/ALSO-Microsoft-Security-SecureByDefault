@@ -1535,8 +1535,35 @@ function Step-PrivilegedAccess {
     Add-Result 'PrivilegedAccess' 'Review application owners and admin role holders' 'Cannot be judged automatically' 'Reviewed and documented' Manual $link 'Check every administrator and the owners of enterprise applications. Remove people who do not need access. Need4Admin (linked in the ALSO guide) lists administrators and their roles in one report.' $doc $docText
 }
 
-function Set-PimAuthContext {
-    $doc = $GuideBase + '#admin-role-review'
+function Get-ArmToken([string]$TenantId) {
+    $b64 = { param($b) [Convert]::ToBase64String($b).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
+    $rnd = New-Object byte[] 32; $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($rnd)
+    $verifier = & $b64 $rnd
+    $challenge = & $b64 ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::ASCII.GetBytes($verifier)))
+    $state = [guid]::NewGuid().ToString('N')
+    $port = Get-Random -Minimum 49200 -Maximum 49900
+    $redirect = "http://localhost:$port/"
+    $clientId = '1950a258-227b-4e31-a9cf-717495945fc2'
+    $auth = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/authorize?client_id=$clientId&response_type=code&redirect_uri=$([uri]::EscapeDataString($redirect))&response_mode=query&scope=$([uri]::EscapeDataString('https://management.azure.com/.default'))&state=$state&code_challenge=$challenge&code_challenge_method=S256&prompt=select_account"
+    $l = New-Object Net.HttpListener; $l.Prefixes.Add($redirect); $l.Start()
+    try {
+        Start-Process $auth
+        $task = $l.GetContextAsync()
+        if (-not $task.Wait(240000)) { throw 'The Azure sign-in was not completed within 4 minutes.' }
+        $ctx = $task.Result
+        $q = $ctx.Request.QueryString
+        $msg = if ($q['code']) { 'Sign-in complete. You can close this window and return to the script.' } else { 'Sign-in failed. Return to the script for details.' }
+        $bytes = [Text.Encoding]::UTF8.GetBytes("<html><body style='font-family:Segoe UI'><h3>$msg</h3></body></html>")
+        $ctx.Response.ContentType = 'text/html'; $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length); $ctx.Response.Close()
+        if ($q['state'] -ne $state) { throw 'The Azure sign-in response did not match the request.' }
+        if (-not $q['code']) { throw "Azure sign-in failed: $($q['error_description'])" }
+        $tok = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body @{ client_id = $clientId; grant_type = 'authorization_code'; code = $q['code']; redirect_uri = $redirect; code_verifier = $verifier; scope = 'https://management.azure.com/.default' }
+        return $tok.access_token
+    }
+    finally { $l.Stop(); $l.Close() }
+}
+
+function Set-PimAuthContext {    $doc = $GuideBase + '#admin-role-review'
     $docText = 'ALSO guide: Review administrator roles (Identity and access, step 4)'
     $link = 'https://entra.microsoft.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles/resourceId//resourceType/tenant/provider/aadroles'
     $why = 'When an admin activates a privileged role in Privileged Identity Management, the activation must satisfy the ALSO "Tier 0 Admins" authentication context. The Conditional Access policy tied to that context then requires phishing-resistant MFA (passkey / FIDO2, Windows Hello) on every activation. PIM cannot ask for plain MFA and an authentication context at the same time, so the plain MFA requirement is replaced by the context.'
@@ -1595,15 +1622,22 @@ function Set-PimAuthContext {
     $azRoles = [ordered]@{ 'Owner' = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'; 'User Access Administrator' = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'; 'Contributor' = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
     $azManual = 'In the Azure portal open Privileged Identity Management > Azure resources > your subscription > Roles > the role > Role settings > Edit and, under Activation, choose "On activation, require Microsoft Entra Conditional Access authentication context" and select ALSO-Tier0 Admins.'
     try {
-        Initialize-Module Az.Accounts
+        Write-Host ''
+        Write-Host '   Azure roles: Azure role settings can only be changed with a separate Azure sign-in.' -ForegroundColor Cyan
+        $hasAz = Read-Host '   Does this tenant have Azure subscriptions? [y] yes  [n] no (default: no)'
+        if ($hasAz -notmatch '^(y|yes)$') {
+            Add-Result 'PrivilegedAccess' 'Azure roles: authentication context required on activation' 'Skipped, no Azure subscriptions' 'Yes' Info $azLink 'You said this tenant has no Azure subscriptions, so there are no Azure roles to protect yet. Run the script again after you create one and answer yes.' $doc $docText
+            Set-Group 'To do by a person'
+            Add-Result 'PrivilegedAccess' 'Switch on the Conditional Access policy for the Tier 0 authentication context' 'Imported switched off by this script' 'Reviewed, tested and switched on' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies' 'The role settings above only point at the authentication context. The context does nothing until the Conditional Access policy E5-ALSO-CA106 (require phishing-resistant MFA on role activation) is switched on. Add your administrators to the group "ALSO- Tier 0 Admins" and make sure each of them has registered a passkey (FIDO2) or Windows Hello before you switch it on, otherwise they cannot activate their roles.' $doc $docText
+            return
+        }
         Write-Host ''
         Write-Host '   SIGN-IN (Azure): needed to set the authentication context on Azure roles in Privileged Identity Management.' -ForegroundColor Yellow
         Write-Host '     Why    : Azure role settings are stored in Azure, not in Microsoft Graph.' -ForegroundColor Gray
         Write-Host '     Access : read and update PIM role settings of Azure subscriptions (needs Owner or User Access Administrator).' -ForegroundColor Gray
         Write-Host '     A browser window opens. Sign in with your Global Administrator account.' -ForegroundColor Gray
-        Connect-AzAccount -Tenant (Get-MgContext).TenantId -ErrorAction Stop | Out-Null
-        $tk = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop).Token
-        if ($tk -is [securestring]) { $tk = [Net.NetworkCredential]::new('', $tk).Password }
+        $tk = Get-ArmToken (Get-MgContext).TenantId
+
         $hdr = @{ Authorization = "Bearer $tk"; 'Content-Type' = 'application/json' }
         $subs = @((Invoke-RestMethod -Headers $hdr -Uri 'https://management.azure.com/subscriptions?api-version=2022-12-01').value)
         if (-not $subs.Count) { Add-Result 'PrivilegedAccess' 'Azure roles: authentication context required on activation' 'No Azure subscriptions found' 'Yes' Info $azLink 'This tenant has no Azure subscriptions, so there are no Azure roles to protect yet. Run this script again after you create one.' $doc $docText }
