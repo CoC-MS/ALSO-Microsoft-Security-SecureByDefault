@@ -147,7 +147,7 @@ function Wait-Worker($ps, [int]$Seconds, [string]$What) {
 $script:PvCache = @{}
 $script:PvDiskLoaded = $false
 function Get-PvDiskPath { Join-Path $env:TEMP ("sbd-purview-cache-" + ("$initialDomain" -replace '[^A-Za-z0-9.-]','_') + ".xml") }
-function Clear-PvCache { $script:PvCache = @{}; $script:PvDiskLoaded = $true; try { Remove-Item (Get-PvDiskPath) -Force -ErrorAction SilentlyContinue } catch {} }
+function Clear-PvCache { $script:PvCache = @{}; $script:PvPreDone = @{}; $script:PvDiskLoaded = $true; try { Remove-Item (Get-PvDiskPath) -Force -ErrorAction SilentlyContinue } catch {} }
 function Invoke-Timed([string]$Code, [int]$Seconds = 60) {
     if (-not $script:PvDiskLoaded) {
         $script:PvDiskLoaded = $true
@@ -157,6 +157,10 @@ function Invoke-Timed([string]$Code, [int]$Seconds = 60) {
         }
     }
     if ($Code -like 'Get-*' -and $script:PvCache.ContainsKey($Code)) { return $script:PvCache[$Code] }
+    if ($Code -like 'Get-*' -and ($script:PvPre -or $script:PvPreDone.ContainsKey($Code))) {
+        $r = Get-PvPrefetched $Code $Seconds
+        if ($r) { if (-not $r.Ok) { throw $r.Err }; $res = @($r.Data); $script:PvCache[$Code] = $res; if ($Mode -ne 'Wipe') { try { $script:PvCache | Export-Clixml (Get-PvDiskPath) -Depth 6 } catch {} }; return $res }
+    }
     $res = Invoke-TimedRaw $Code $Seconds
     if ($Code -like 'Get-*') { $script:PvCache[$Code] = $res; if ($Mode -ne 'Wipe') { try { $script:PvCache | Export-Clixml (Get-PvDiskPath) -Depth 6 } catch {} } }
     $res
@@ -174,6 +178,63 @@ function Invoke-TimedRaw([string]$Code, [int]$Seconds = 60) {
     [void]$ps.AddScript($Code)
     try { Wait-Worker $ps $Seconds 'Purview' }
     catch { if ($_.Exception.Message -like '*skipped') { $script:IppsWorker = $null }; throw }
+}
+# Purview reads are slow (often 30-120 s each). They are started in the background right after
+# sign-in, so they run while the Entra, Intune and Defender steps are checked.
+$script:PvPre = $null; $script:PvPreDone = @{}
+$script:PvPreCmds = @('Get-Label -ErrorAction Stop', 'Get-LabelPolicy -ErrorAction Stop', 'Get-DlpCompliancePolicy -ErrorAction Stop', 'Get-DlpComplianceRule -ErrorAction Stop', 'Get-RetentionCompliancePolicy -ErrorAction Stop', 'Get-AutoSensitivityLabelPolicy -ErrorAction Stop', 'Get-InsiderRiskPolicy -ErrorAction Stop', 'Get-SupervisoryReviewPolicyV2 -ErrorAction Stop')
+function Start-PvPrefetch {
+    if (-not $script:IppsTok -or $script:IppsWorker -or $script:PvPre) { return }
+    $p = Get-PvDiskPath
+    if ($Mode -eq 'Enforce' -and (Test-Path $p) -and ((Get-Date) - (Get-Item $p).LastWriteTime).TotalHours -lt 2) { return }
+    try {
+        $h = [hashtable]::Synchronized(@{})
+        $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+        $ps = [powershell]::Create(); $ps.Runspace = $rs
+        [void]$ps.AddScript('param($t, $o, $cmds, $h)
+            $WarningPreference = ''SilentlyContinue''
+            Import-Module ExchangeOnlineManagement -ErrorAction Stop
+            Connect-IPPSSession -AccessToken $t -Organization $o -ShowBanner:$false -ErrorAction Stop
+            $h[''__connected''] = $true
+            foreach ($c in $cmds) {
+                try { $d = @(& ([scriptblock]::Create($c))); $h[$c] = @{ Ok = $true; Data = $d } }
+                catch { $h[$c] = @{ Ok = $false; Err = "$($_.Exception.Message)" } }
+            }').AddArgument($script:IppsTok).AddArgument($script:IppsOrg).AddArgument($script:PvPreCmds).AddArgument($h)
+        $script:PvPre = @{ PS = $ps; RS = $rs; H = $h; AR = $ps.BeginInvoke() }
+        Write-Host '  Reading Purview labels and policies in the background while the other steps run...' -ForegroundColor DarkGray
+    }
+    catch { $script:PvPre = $null }
+}
+function Close-PvPrefetch([bool]$Keep) {
+    $pre = $script:PvPre; $script:PvPre = $null
+    if (-not $pre) { return }
+    foreach ($k in @($pre.H.Keys)) { if ($k -ne '__connected') { $script:PvPreDone[$k] = $pre.H[$k] } }
+    if ($Keep -and $pre.H['__connected'] -and -not $pre.PS.HadErrors) { $script:IppsWorker = $pre.RS }
+    elseif (-not $pre.AR.IsCompleted) { try { [void]$pre.PS.BeginStop($null, $null) } catch {} }
+}
+function Get-PvPrefetched([string]$Code, [int]$Seconds) {
+    if ($script:PvPreDone.ContainsKey($Code)) { return $script:PvPreDone[$Code] }
+    $pre = $script:PvPre
+    if (-not $pre) { return $null }
+    $mine = $script:PvPreCmds -contains $Code
+    $limit = $Seconds + $(if ($pre.H['__connected']) { 0 } else { 120 }) + $(if ($mine) { 0 } else { 180 })
+    $sw = [Diagnostics.Stopwatch]::StartNew(); $next = 15
+    while (-not $pre.AR.IsCompleted -and -not ($mine -and $pre.H.ContainsKey($Code))) {
+        if ($sw.Elapsed.TotalSeconds -ge $limit) {
+            Close-PvPrefetch $false
+            throw "Purview did not answer within $limit seconds and was skipped"
+        }
+        if ($sw.Elapsed.TotalSeconds -ge $next) { Write-Host ("   ...waiting for Purview ({0}s of {1}s)" -f [int]$sw.Elapsed.TotalSeconds, $limit) -ForegroundColor DarkGray; $next += 15 }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($mine -and $pre.H.ContainsKey($Code)) {
+        $r = $pre.H[$Code]
+        if ($pre.AR.IsCompleted) { Close-PvPrefetch $true }
+        return $r
+    }
+    Close-PvPrefetch $true
+    if ($script:PvPreDone.ContainsKey($Code)) { return $script:PvPreDone[$Code] }
+    $null
 }
 function Invoke-Safe([string]$Step, [scriptblock]$Body) {
     try { & $Body } catch { Add-Result $Step 'Step could not be completed' "$($_.Exception.Message) (script line $($_.InvocationInfo.ScriptLineNumber))" 'Completed' Error $null 'The step stopped unexpectedly. The checks before this point are still listed. Send this message to ALSO if it persists.' }
@@ -424,6 +485,7 @@ if ($needsPurview) {
         else { throw "Purview sign-in failed: $($_.Exception.Message)" }
     } }
     Write-Host '  Connected to Microsoft Purview.' -ForegroundColor Green
+    if ($Mode -ne 'Wipe' -and $Steps -contains 'Purview') { Start-PvPrefetch }
 }
 function Invoke-SpoCsom([string]$Actions, [string]$Paths) {
     $xml = "<Request AddExpandoFieldTypeSuffix=`"true`" SchemaVersion=`"15.0.0.0`" LibraryVersion=`"16.0.0.0`" ApplicationName=`"ALSO`" xmlns=`"http://schemas.microsoft.com/sharepoint/clientquery/2009`"><Actions>$Actions</Actions><ObjectPaths>$Paths</ObjectPaths></Request>"
@@ -1151,18 +1213,52 @@ function Step-DefenderEndpoint {
         Compare-Setting 'DefenderEndpoint' 'Defender for Business / Endpoint licensed and provisioned' $(if ($plans) { 'Licensed and provisioned' } else { 'No Defender for Endpoint licence found' }) 'Licensed and provisioned' $null 'https://security.microsoft.com/machines?category=all-devices'
     }
     catch { Add-Result 'DefenderEndpoint' 'Defender for Business / Endpoint licensed and provisioned' "Not readable: $($_.Exception.Message)" 'Licensed and provisioned' Manual 'https://security.microsoft.com/machines?category=all-devices' }
-    try {
-        $c = @((Graph GET 'https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors').value)
-        if (-not $c) { Add-Result 'DefenderEndpoint' 'Intune connection to Defender for Endpoint' 'No connector exists yet' 'Connected' Manual 'https://security.microsoft.com/securitysettings/endpoints/integration'; Write-Host '   Turn on "Microsoft Intune connection" once in the Defender portal (Settings > Endpoints > Advanced features); this creates the connector, after which this script can verify and enable it.' -ForegroundColor DarkGray }
-        foreach ($x in $c) {
-            $cid = $x.id
-            $cur = if ($x.partnerState -eq 'enabled') { 'Connected' } else { "Not connected (status: $($x.partnerState))" }
-            Compare-Setting 'DefenderEndpoint' 'Intune connection to Defender for Endpoint' $cur 'Connected' {
-                Graph PATCH "https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors/$cid" @{ partnerState = 'enabled'; windowsEnabled = $true; androidEnabled = $true; iosEnabled = $true; macEnabled = $true; microsoftDefenderForEndpointAttachEnabled = $true } | Out-Null
-            } $atp
+    $devL = 'https://security.microsoft.com/machines?category=all-devices'
+    $intL = 'https://security.microsoft.com/securitysettings/endpoints/integration'
+    $mdeId = 'fc780465-2017-40d4-a0c5-307022471b92'
+    $cUri = 'https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors'
+    $x = $null; $readErr = $null
+    try { $x = @((Graph GET $cUri).value) | Where-Object { $_.id -eq $mdeId } | Select-Object -First 1 } catch { $readErr = $_.Exception.Message }
+    $sp = $null
+    try { $sp = @((Graph GET "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$mdeId'&`$select=id").value) | Select-Object -First 1 } catch { }
+
+    # 1. Defender instance set up (Defender portal > Assets > Devices)
+    if ($x -or $sp) { Add-Result 'DefenderEndpoint' 'Defender for Business / Endpoint set up in the tenant' 'Set up' 'Set up' Compliant $devL 'The Defender for Endpoint service is registered in your tenant, so devices can be onboarded and appear under Assets > Devices.' }
+    elseif ($plans) { Add-Result 'DefenderEndpoint' 'Defender for Business / Endpoint set up in the tenant' 'Not set up yet' 'Set up' Manual $devL 'Microsoft offers no way to start this automatically. Open the Defender portal and go to Assets > Devices once: Microsoft then finishes the setup for your tenant (this can take a few hours). Run the script again afterwards.' }
+
+    # 2. Intune connection switched on in the Defender portal (read-only for Microsoft's API)
+    $stateTxt = @{ enabled = 'On and active'; available = 'On (provisioned)'; unresponsive = 'On, but Defender is not answering'; notSetUp = 'Off (not set up)'; unavailable = 'Off (not available)'; error = 'Error' }
+    if ($readErr) { Add-Result 'DefenderEndpoint' 'Microsoft Intune connection in the Defender portal' "Could not be read: $readErr" 'On' Manual $intL 'Check in the Defender portal under System > Settings > Endpoints > Advanced features that Microsoft Intune connection is On.' }
+    else {
+        $st = if ($x) { "$($x.partnerState)" } else { '' }
+        $cur = if ($x) { $(if ($stateTxt[$st]) { $stateTxt[$st] } else { $st }) } else { 'Off (never switched on)' }
+        $hb = if ($x -and $x.lastHeartbeatDateTime) { " Last contact from Defender: $(([datetime]$x.lastHeartbeatDateTime).ToString('yyyy-MM-dd HH:mm')) UTC." } else { '' }
+        if ($st -in 'enabled', 'available') { Add-Result 'DefenderEndpoint' 'Microsoft Intune connection in the Defender portal' $cur 'On' Compliant $intL "Defender and Intune share device risk and security settings.$hb" }
+        else { Add-Result 'DefenderEndpoint' 'Microsoft Intune connection in the Defender portal' $cur 'On' Manual $intL "Microsoft offers no way to switch this on automatically. In the Defender portal go to System > Settings > Endpoints > Advanced features, turn Microsoft Intune connection On and select Save. The Intune side shows 'Enabled' within about 15 minutes, then run the script again.$hb" }
+    }
+
+    # 3. Intune side: connection status and connector toggles
+    if (-not $readErr) {
+        $ok = $x -and "$($x.partnerState)" -in 'enabled', 'available'
+        $cur = if (-not $x) { 'No connection' } elseif ($ok) { 'Enabled' } else { "Not enabled ($($stateTxt["$($x.partnerState)"]))" }
+        Add-Result 'DefenderEndpoint' 'Defender for Endpoint connection status in Intune' $cur 'Enabled' $(if ($ok) { 'Compliant' } else { 'Manual' }) $atp $(if ($ok) { 'Intune and Defender for Endpoint are connected.' } else { 'This status turns Enabled by itself once the Microsoft Intune connection is On in the Defender portal (see the item above). Until then Intune shows the toggles as "off".' })
+        $wantT = @{ microsoftDefenderForEndpointAttachEnabled = $true }
+        $attachOn = $x -and $x.microsoftDefenderForEndpointAttachEnabled -eq $true
+        $setAttach = {
+            if ($x) { Graph PATCH "$cUri/$mdeId" $wantT | Out-Null }
+            else { Graph POST $cUri (@{ '@odata.type' = '#microsoft.graph.mobileThreatDefenseConnector'; id = $mdeId } + $wantT) | Out-Null }
+        }
+        Compare-Setting 'DefenderEndpoint' 'Allow Microsoft Defender for Endpoint to enforce Endpoint Security Configurations' $(if ($attachOn) { 'On' } else { 'Off' }) 'On' $setAttach $atp 'Lets Defender for Endpoint apply Intune endpoint security policies (antivirus, firewall, attack surface reduction) also to devices that are not enrolled in Intune. Intune shows this toggle as "off" until the connection status is Enabled, but the saved setting is kept.'
+        if ($x) {
+            $plat = [ordered]@{ windowsEnabled = 'Windows'; macEnabled = 'macOS'; androidEnabled = 'Android'; iosEnabled = 'iOS' }
+            $offP = @($plat.Keys | Where-Object { $x.$_ -ne $true })
+            $cur = if ($offP.Count) { "Off for $(($offP | ForEach-Object { $plat[$_] }) -join ', ')" } else { 'On for Windows, macOS, Android and iOS' }
+            Compare-Setting 'DefenderEndpoint' 'Use Defender device risk in compliance policies' $cur 'On for Windows, macOS, Android and iOS' {
+                $b = @{}; foreach ($k in $plat.Keys) { $b[$k] = $true }
+                Graph PATCH "$cUri/$mdeId" $b | Out-Null
+            } $atp 'Connects each platform to Defender for Endpoint, so compliance policies can mark devices with a high machine risk as non-compliant.'
         }
     }
-    catch { Add-Result 'DefenderEndpoint' 'Intune connection to Defender for Endpoint' "Not readable: $($_.Exception.Message)" 'Connected' Manual $atp }
 }
 
 function Step-DefenderGuidance {

@@ -109,7 +109,8 @@ table.set td:first-child{font-weight:600;width:42%}
   <h2 id="defender"><span>8.</span> Defender</h2>
   <table class="set"><tr><th>Setting</th><th>What the script sets</th></tr>
     <tr><td>Defender for Office 365 Standard and Strict preset protection rules</td><td>Enabled when they exist but are off</td></tr>
-    <tr><td>Intune connection to Defender for Endpoint</td><td>Connected for Windows, Android, iOS and macOS (when the connector exists)</td></tr>
+    <tr><td>Allow Microsoft Defender for Endpoint to enforce Endpoint Security Configurations (Intune)</td><td>Off &rarr; On</td></tr>
+    <tr><td>Use Defender device risk in compliance policies (Windows, macOS, Android and iOS)</td><td>Off &rarr; On</td></tr>
   </table>
 
   <h2 id="ca"><span>9.</span> Conditional Access baseline</h2>
@@ -158,8 +159,8 @@ table.set td:first-child{font-weight:600;width:42%}
     <tr><td>Default sharing link type, link expiry, OneDrive sharing level</td><td>Specific people, links expire in 30 days</td></tr>
     <tr><td>Standard preset security policy (Defender for Office 365)</td><td>On for all recipients</td></tr>
     <tr><td>SPF, DKIM and DMARC for each domain</td><td>SPF with -all, DKIM on, DMARC quarantine or reject</td></tr>
-    <tr><td>Defender for Business / Endpoint provisioned</td><td>Licensed and devices visible</td></tr>
-    <tr><td>Intune connection in Defender (first-time switch-on only; later the script verifies and enables it)</td><td>On</td></tr>
+    <tr><td>Defender for Business / Endpoint set up in the tenant (first-time setup only)</td><td>Set up, devices visible under Assets &gt; Devices</td></tr>
+    <tr><td>Microsoft Intune connection in the Defender portal (the script reads the connection status in Intune)</td><td>On, connection status Enabled</td></tr>
     <tr><td>Defender for Endpoint macOS app and onboarding files</td><td>Added in Intune</td></tr>
     <tr><td>Defender incident email notifications</td><td>Sent to the right people</td></tr>
     <tr><td>Defender for Identity, Defender for Cloud Apps, app governance</td><td>Deployed and integrated</td></tr>
