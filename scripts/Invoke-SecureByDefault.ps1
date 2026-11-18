@@ -1885,6 +1885,14 @@ function ConvertTo-Psd1($v) {
     Expand-Archive $zip -DestinationPath $tmp -Force
     Move-Item (Get-ChildItem $tmp -Directory | Select-Object -First 1).FullName $dir
     Remove-Item $tmp -Recurse -Force
+    # Progress lines only: the label order step is slow and otherwise silent.
+    $lf = Join-Path $dir 'Purview\Modules\Setup-SensitivityLabels.ps1'
+    if (Test-Path $lf) {
+        $t = [IO.File]::ReadAllText($lf) -replace "`r`n", "`n"
+        $t = $t.Replace('    $peek = @(Get-Label -ErrorAction SilentlyContinue', '    Write-Host "    ...checking label ''$displayStr'' (Microsoft answers slowly, this can take a minute)" -ForegroundColor DarkGray' + "`n" + '    $peek = @(Get-Label -ErrorAction SilentlyContinue')
+        $t = $t.Replace('    foreach ($c in $cands) {' + "`n" + '        try {' + "`n" + '            Invoke-WithTransientRetry -Description ("Set-Label priority=', '    foreach ($c in $cands) {' + "`n" + '        Write-Host "    ...moving label ''$DisplayNameForLog'' to position $TargetPriority" -ForegroundColor DarkGray' + "`n" + '        try {' + "`n" + '            Invoke-WithTransientRetry -Description ("Set-Label priority=')
+        [IO.File]::WriteAllText($lf, $t, (New-Object Text.UTF8Encoding($true)))
+    }
     $dir
 }
 
