@@ -216,7 +216,7 @@ $graphScopes = if ($Mode -eq 'Wipe') {
     'Policy.ReadWrite.ConditionalAccess', 'Policy.Read.All', 'Application.Read.All', 'Group.ReadWrite.All', 'User.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'Directory.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'Organization.Read.All', 'DeviceManagementConfiguration.ReadWrite.All',
     'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.ConsentRequest', 'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'Policy.ReadWrite.MobilityManagement', 'SharePointTenantSettings.ReadWrite.All',
-    'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All', 'LifecycleWorkflows.ReadWrite.All'
+    'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All', 'LifecycleWorkflows.ReadWrite.All', 'RoleManagementPolicy.ReadWrite.Directory'
 }
 elseif ($Mode -eq 'Enforce') {
     'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.AuthenticationMethod', 'Policy.ReadWrite.ConsentRequest',
@@ -224,12 +224,12 @@ elseif ($Mode -eq 'Enforce') {
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
     'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
     'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess',
-    'DeviceManagementApps.ReadWrite.All',     'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement', 'LifecycleWorkflows.ReadWrite.All'
+    'DeviceManagementApps.ReadWrite.All',     'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement', 'LifecycleWorkflows.ReadWrite.All', 'RoleManagementPolicy.ReadWrite.Directory'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
     'DeviceManagementServiceConfig.Read.All',     'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All',
-        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All',         'Application.Read.All', 'AccessReview.Read.All', 'LifecycleWorkflows.Read.All'
+        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All',         'Application.Read.All', 'AccessReview.Read.All', 'LifecycleWorkflows.Read.All', 'RoleManagementPolicy.Read.Directory'
     }
     Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
@@ -1336,10 +1336,11 @@ function Step-ConditionalAccess {
     $dir = Get-GuidePackage 'conditional-access'
     $polFiles = @(Get-PackageJson $dir 'ConditionalAccess')
     $grpFiles = @(Get-PackageJson $dir 'Groups')
-    $ctxFiles = @(Get-PackageJson $dir 'AuthenticationContext')
+    $ctxFiles = @(Get-PackageJson $dir 'AuthenticationContext' | Group-Object { $_.Json.id } | ForEach-Object { $_.Group[0] })
     $bgGroup = Find-GroupByName $BreakGlassGroupName
     $bgId = $bgGroup.id
     $e5ok = ($lic.Tier -eq 'Full') -or $lic.HasP2
+    if (-not $e5ok) { $ctxFiles = @() }
     $wanted = @($polFiles | Where-Object { $e5ok -or $_.File.Name -notmatch '^E5-' })
     $skippedE5 = @($polFiles | Where-Object { -not $e5ok -and $_.File.Name -match '^E5-' })
     $existing = @(Get-AllPages $caBase)
@@ -1527,12 +1528,116 @@ function Step-PrivilegedAccess {
             if ($ar.Count) { Add-Result 'PrivilegedAccess' 'Access reviews' "$($ar.Count) review(s): $(($ar | ForEach-Object { $_.displayName }) -join '; ')" 'At least one recurring review for privileged roles and guests' Compliant $arLink 'Regular reviews remove access that is no longer needed.' $arDoc $arText }
             else { Add-Result 'PrivilegedAccess' 'Access reviews' 'None configured' 'At least one recurring review for privileged roles and guests' Manual $arLink 'Create recurring access reviews for privileged roles, guest users and sensitive groups. They depend on your reviewers, so they cannot be created from a baseline file.' $arDoc $arText }
         }
+        Set-PimAuthContext
     }
     else { Add-Result 'PrivilegedAccess' 'Eligible roles and access reviews' 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'Privileged Identity Management and access reviews need Entra ID P2, so this part is skipped.' ($GuideBase + '#access-reviews') 'ALSO guide: Access reviews (Extend identity, step 2)' }
     Set-Group 'To do by a person'
     Add-Result 'PrivilegedAccess' 'Review application owners and admin role holders' 'Cannot be judged automatically' 'Reviewed and documented' Manual $link 'Check every administrator and the owners of enterprise applications. Remove people who do not need access. Need4Admin (linked in the ALSO guide) lists administrators and their roles in one report.' $doc $docText
 }
 
+function Set-PimAuthContext {
+    $doc = $GuideBase + '#admin-role-review'
+    $docText = 'ALSO guide: Review administrator roles (Identity and access, step 4)'
+    $link = 'https://entra.microsoft.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles/resourceId//resourceType/tenant/provider/aadroles'
+    $why = 'When an admin activates a privileged role in Privileged Identity Management, the activation must satisfy the ALSO "Tier 0 Admins" authentication context. The Conditional Access policy tied to that context then requires phishing-resistant MFA (passkey / FIDO2, Windows Hello) on every activation. PIM cannot ask for plain MFA and an authentication context at the same time, so the plain MFA requirement is replaced by the context.'
+    Set-Group 'Authentication context on privileged role activation (Entra ID P2)'
+    $ctxUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences'
+    $ctxId = 'c1'
+    $have = $null; try { $have = Graph GET "$ctxUri/$ctxId" } catch { }
+    if (-not $have -or -not $have.id) {
+        $created = $false
+        if (Confirm-Change "Create the authentication context 'ALSO-Tier0 Admins' (needed for privileged role activation)") {
+            try { Graph POST $ctxUri @{ id = $ctxId; displayName = 'ALSO-Tier0 Admins'; description = 'All Tier 0 Admins'; isAvailable = $true } | Out-Null; $created = $true; Add-Result 'PrivilegedAccess' 'Authentication context: ALSO-Tier0 Admins' 'Missing' 'Created' Fixed $link $why $doc $docText }
+            catch { Add-Result 'PrivilegedAccess' 'Authentication context: ALSO-Tier0 Admins' 'Missing' 'Created' Error $link "Could not create it: $($_.Exception.Message)" $doc $docText }
+        }
+        else { Add-Result 'PrivilegedAccess' 'Authentication context: ALSO-Tier0 Admins' 'Missing' 'Created' Drift $link $why $doc $docText }
+        if (-not $created) { return }
+    }
+    else { Add-Result 'PrivilegedAccess' 'Authentication context: ALSO-Tier0 Admins' 'Exists' 'Exists' Compliant $link $why $doc $docText }
+
+    $ruleTarget = @{ caller = 'EndUser'; operations = @('all'); level = 'Assignment'; inheritableSettings = @(); enforcedSettings = @() }
+    $roles = [ordered]@{
+        'Global Administrator' = '62e90394-69f5-4237-9190-012177145e10'
+        'Privileged Role Administrator' = 'e8611ab8-c189-46e8-94e1-60213ab1f814'
+        'Privileged Authentication Administrator' = '7be44c8a-adaf-4e2a-84d6-ab2649e08a13'
+        'Security Administrator' = '194ae4cb-b126-40b2-bd5b-6091b380977d'
+        'Conditional Access Administrator' = 'b1be1c3e-b65d-4f19-8427-f6fa0d97feb9'
+        'Exchange Administrator' = '29232cdf-9323-42fd-ade2-1d097af3e4de'
+        'SharePoint Administrator' = 'f28a1f50-f6e7-4571-818b-6a12f2af6b6c'
+        'Intune Administrator' = '3a2c62db-5318-420d-8d74-23affee5d9d5'
+        'Application Administrator' = '9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3'
+        'Cloud Application Administrator' = '158c047a-c907-4556-b7ef-446551a6b5f7'
+        'Hybrid Identity Administrator' = '8ac3fc64-6eca-42ea-9e69-59f4c7b60eb2'
+        'User Administrator' = 'fe930be7-5e62-47db-91af-98c3a49a38b1'
+        'Authentication Administrator' = 'c4e39bd9-1100-46d3-8c65-fb160da0071f'
+    }
+    foreach ($rn in $roles.Keys) {
+        $rid = $roles[$rn]; $nm = "Entra role '$rn': authentication context required on activation"
+        Invoke-Part 'PrivilegedAccess' $nm {
+            $q = [uri]::EscapeDataString("scopeId eq '/' and scopeType eq 'DirectoryRole' and roleDefinitionId eq '$rid'")
+            $a = @((Graph GET ('https://graph.microsoft.com/v1.0/policies/roleManagementPolicyAssignments?$filter=' + $q + '&$expand=policy($expand=rules)')).value) | Select-Object -First 1
+            if (-not $a) { Add-Result 'PrivilegedAccess' $nm 'Role policy not found' 'Yes' Manual $link $why $doc $docText; return }
+            $pUri = "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies/$($a.policyId)/rules"
+            $ac = @($a.policy.rules | Where-Object { $_.id -eq 'AuthenticationContext_EndUser_Assignment' }) | Select-Object -First 1
+            $en = @($a.policy.rules | Where-Object { $_.id -eq 'Enablement_EndUser_Assignment' }) | Select-Object -First 1
+            $cur = if ($ac.isEnabled -eq $true -and "$($ac.claimValue)" -eq $ctxId) { 'Yes' } else { 'No' }
+            Compare-Setting 'PrivilegedAccess' $nm $cur 'Yes' {
+                $keep = @(@($en.enabledRules) | Where-Object { $_ -and $_ -ne 'MultiFactorAuthentication' })
+                Graph PATCH "$pUri/Enablement_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'; id = 'Enablement_EndUser_Assignment'; enabledRules = [object[]]$keep; target = (@{ '@odata.type' = 'microsoft.graph.unifiedRoleManagementPolicyRuleTarget' } + $ruleTarget) } | Out-Null
+                Graph PATCH "$pUri/AuthenticationContext_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyAuthenticationContextRule'; id = 'AuthenticationContext_EndUser_Assignment'; isEnabled = $true; claimValue = $ctxId; target = (@{ '@odata.type' = 'microsoft.graph.unifiedRoleManagementPolicyRuleTarget' } + $ruleTarget) } | Out-Null
+            } $link $why $doc $docText
+        }
+    }
+
+    Set-Group 'Authentication context on privileged Azure role activation (Entra ID P2)'
+    $azLink = 'https://portal.azure.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles'
+    $azWhy = $why + ' This is set for the high-privileged Azure roles Owner, User Access Administrator and Contributor on every subscription you can manage.'
+    $azRoles = [ordered]@{ 'Owner' = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'; 'User Access Administrator' = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'; 'Contributor' = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
+    $azManual = 'In the Azure portal open Privileged Identity Management > Azure resources > your subscription > Roles > the role > Role settings > Edit and, under Activation, choose "On activation, require Microsoft Entra Conditional Access authentication context" and select ALSO-Tier0 Admins.'
+    try {
+        Initialize-Module Az.Accounts
+        Write-Host ''
+        Write-Host '   SIGN-IN (Azure): needed to set the authentication context on Azure roles in Privileged Identity Management.' -ForegroundColor Yellow
+        Write-Host '     Why    : Azure role settings are stored in Azure, not in Microsoft Graph.' -ForegroundColor Gray
+        Write-Host '     Access : read and update PIM role settings of Azure subscriptions (needs Owner or User Access Administrator).' -ForegroundColor Gray
+        Write-Host '     A browser window opens. Sign in with your Global Administrator account.' -ForegroundColor Gray
+        Connect-AzAccount -Tenant (Get-MgContext).TenantId -ErrorAction Stop | Out-Null
+        $tk = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop).Token
+        if ($tk -is [securestring]) { $tk = [Net.NetworkCredential]::new('', $tk).Password }
+        $hdr = @{ Authorization = "Bearer $tk"; 'Content-Type' = 'application/json' }
+        $subs = @((Invoke-RestMethod -Headers $hdr -Uri 'https://management.azure.com/subscriptions?api-version=2022-12-01').value)
+        if (-not $subs.Count) { Add-Result 'PrivilegedAccess' 'Azure roles: authentication context required on activation' 'No Azure subscriptions found' 'Yes' Info $azLink 'This tenant has no Azure subscriptions, so there are no Azure roles to protect yet. Run this script again after you create one.' $doc $docText }
+        foreach ($s in $subs) {
+            $sid = $s.subscriptionId
+            $asg = @()
+            try { $asg = @((Invoke-RestMethod -Headers $hdr -Uri "https://management.azure.com/subscriptions/$sid/providers/Microsoft.Authorization/roleManagementPolicyAssignments?api-version=2020-10-01").value) }
+            catch { Add-Result 'PrivilegedAccess' "Azure subscription '$($s.displayName)': role settings" "Could not be read: $($_.Exception.Message)" 'Yes' Manual $azLink "$azManual $azWhy" $doc $docText; continue }
+            foreach ($rn in $azRoles.Keys) {
+                $nm = "Azure role '$rn' in '$($s.displayName)': authentication context required on activation"
+                $a = $asg | Where-Object { "$($_.properties.roleDefinitionId)" -like "*$($azRoles[$rn])" } | Select-Object -First 1
+                if (-not $a) { Add-Result 'PrivilegedAccess' $nm 'Role policy not found' 'Yes' Manual $azLink "$azManual $azWhy" $doc $docText; continue }
+                $pUri = "https://management.azure.com$($a.properties.policyId)?api-version=2020-10-01"
+                $pol = Invoke-RestMethod -Headers $hdr -Uri $pUri
+                $rules = @($pol.properties.effectiveRules)
+                $ac = $rules | Where-Object { $_.id -eq 'AuthenticationContext_EndUser_Assignment' } | Select-Object -First 1
+                $en = $rules | Where-Object { $_.id -eq 'Enablement_EndUser_Assignment' } | Select-Object -First 1
+                $cur = if ($ac.isEnabled -eq $true -and "$($ac.claimValue)" -eq $ctxId) { 'Yes' } else { 'No' }
+                Compare-Setting 'PrivilegedAccess' $nm $cur 'Yes' {
+                    $keep = @(@($en.enabledRules) | Where-Object { $_ -and $_ -ne 'MultiFactorAuthentication' })
+                    $tg = @{ caller = 'EndUser'; operations = @('All'); level = 'Assignment'; targetObjects = $null; inheritableSettings = $null; enforcedSettings = $null }
+                    $body = @{ properties = @{ rules = @(
+                                @{ id = 'Enablement_EndUser_Assignment'; ruleType = 'RoleManagementPolicyEnablementRule'; enabledRules = [object[]]$keep; target = $tg },
+                                @{ id = 'AuthenticationContext_EndUser_Assignment'; ruleType = 'RoleManagementPolicyAuthenticationContextRule'; isEnabled = $true; claimValue = $ctxId; target = $tg }) } } | ConvertTo-Json -Depth 12
+                    Invoke-RestMethod -Method Patch -Headers $hdr -Uri $pUri -Body $body | Out-Null
+                } $azLink $azWhy $doc $docText
+            }
+        }
+    }
+    catch { Add-Result 'PrivilegedAccess' 'Azure roles: authentication context required on activation' "Could not be read or set: $($_.Exception.Message)" 'Yes' Manual $azLink "$azManual $azWhy" $doc $docText }
+
+    Set-Group 'To do by a person'
+    Add-Result 'PrivilegedAccess' 'Switch on the Conditional Access policy for the Tier 0 authentication context' 'Imported switched off by this script' 'Reviewed, tested and switched on' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies' 'The role settings above only point at the authentication context. The context does nothing until the Conditional Access policy E5-ALSO-CA106 (require phishing-resistant MFA on role activation) is switched on. Add your administrators to the group "ALSO- Tier 0 Admins" and make sure each of them has registered a passkey (FIDO2) or Windows Hello before you switch it on, otherwise they cannot activate their roles.' $doc $docText
+}
 function Get-IntunePlatform($Json, $File) {
     $t = "$($Json.'@odata.type')"; $pl = "$($Json.platforms)"
     if ($pl -match 'windows' -or $t -match 'windows|win32') { return 'windows' }
@@ -2343,7 +2448,27 @@ function Step-WipeTenantSettings {
         }
         catch { Write-Host "   Teams app permission policy could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
     }
-    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
+    if ('PrivilegedAccess' -in $Steps) {
+        try {
+            $q = [uri]::EscapeDataString("scopeId eq '/' and scopeType eq 'DirectoryRole'")
+            $asg = @(Get-AllPages ('https://graph.microsoft.com/v1.0/policies/roleManagementPolicyAssignments?$filter=' + $q + '&$expand=policy($expand=rules)'))
+            foreach ($a in $asg) {
+                $ac = @($a.policy.rules | Where-Object { $_.id -eq 'AuthenticationContext_EndUser_Assignment' }) | Select-Object -First 1
+                if (-not ($ac.isEnabled -eq $true -and "$($ac.claimValue)" -eq 'c1')) { continue }
+                $en = @($a.policy.rules | Where-Object { $_.id -eq 'Enablement_EndUser_Assignment' }) | Select-Object -First 1
+                $rn = "$($a.roleDefinitionId)"; try { $rn = (Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/$($a.roleDefinitionId)").displayName } catch { }
+                $pUri = "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies/$($a.policyId)/rules"; $en0 = $en
+                $undo = {
+                    $tg = @{ '@odata.type' = 'microsoft.graph.unifiedRoleManagementPolicyRuleTarget'; caller = 'EndUser'; operations = @('all'); level = 'Assignment'; inheritableSettings = @(); enforcedSettings = @() }
+                    Graph PATCH "$pUri/AuthenticationContext_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyAuthenticationContextRule'; id = 'AuthenticationContext_EndUser_Assignment'; isEnabled = $false; claimValue = ''; target = $tg } | Out-Null
+                    $rules = [object[]]@(@($en0.enabledRules) + 'MultiFactorAuthentication' | Where-Object { $_ } | Select-Object -Unique)
+                    Graph PATCH "$pUri/Enablement_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'; id = 'Enablement_EndUser_Assignment'; enabledRules = $rules; target = $tg } | Out-Null
+                }.GetNewClosure()
+                & $add 'PrivilegedAccess' "Entra role '$rn': authentication context on activation removed, multifactor authentication required instead (Microsoft default)" $undo
+            }
+        }
+        catch { Write-Host "   Entra role activation settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
+    }    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
 }
 function Invoke-Wipe {
     Write-Host ''
@@ -2366,7 +2491,7 @@ function Invoke-Wipe {
         if ($s -eq 'TenantSettings' -or $s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
     Write-Step 'Settings that are left as they are' 'Wipe never switches these off.'
-    Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults, the other authentication methods, the Defender settings and the Exchange Online protection presets stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
+    Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults, the other authentication methods, the Defender settings, the Exchange Online protection presets and the authentication context on Azure roles stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
 }
 
 $basicSkip = 'IntuneEnrollment', 'IntunePolicies', 'ConditionalAccess', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'

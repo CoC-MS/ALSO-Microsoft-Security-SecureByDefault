@@ -119,6 +119,8 @@ table.set td:first-child{font-weight:600;width:42%}
     <tr><td>Groups and authentication contexts the policies need</td><td>Creates the missing ones</td></tr>
     <tr><td>Break-glass group</td><td>Added as an exclusion to every Conditional Access policy</td></tr>
     <tr><td>ALSO Conditional Access groups</td><td>Placed inside the restricted management administrative unit</td></tr>
+    <tr><td>Authentication context &quot;ALSO-Tier0 Admins&quot;</td><td>Imported when missing (Entra ID P2 tenants only; skipped on Entra ID P1 and Free)</td></tr>
+    <tr><td>Privileged Entra and Azure roles</td><td>Require the Tier 0 authentication context when the role is activated in Privileged Identity Management, for example Global Administrator, Privileged Role Administrator, Security Administrator, and the Azure roles Owner, User Access Administrator and Contributor (Entra ID P2 tenants only)</td></tr>
   </table>
 
   <h2 id="intune"><span>10.</span> Intune policy baseline</h2>
@@ -139,6 +141,7 @@ table.set td:first-child{font-weight:600;width:42%}
   <table class="set"><tr><th>Area</th><th>What can be removed or set back</th></tr>
     <tr><td>Break-glass</td><td>The two accounts, their group and the restricted management unit</td></tr>
     <tr><td>Conditional Access, Intune and Purview</td><td>The ALSO baseline items that Enforce deployed</td></tr>
+    <tr><td>Privileged role activation</td><td>The authentication context requirement on Entra roles is removed and multifactor authentication is required again</td></tr>
     <tr><td>Tenant-wide settings</td><td>User settings, app consent, SharePoint sharing, LAPS and Intune enrollment can be set back to Microsoft defaults</td></tr>
   </table>
 
