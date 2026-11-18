@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ALSO Secure by Default site
+    url: https://coc-ms.github.io/ALSO-Microsoft-Security-SecureByDefault/
+    about: Read what the script checks and changes, and how to run it.
+  - name: Policy template questions
+    url: https://coc-ms.github.io/ALSO-security-policy-templates-navigator/
+    about: For questions about the ALSO policy templates themselves, use the Policy Templates Navigator and the linked policy repositories.

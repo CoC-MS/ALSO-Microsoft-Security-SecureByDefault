@@ -1,0 +1,42 @@
+name: Setting or feature request
+description: Suggest a tenant setting to check or automate, or another improvement.
+title: "[Request]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, customer information or tenant identifiers.
+  - type: input
+    id: setting
+    attributes:
+      label: Setting or feature
+      placeholder: "Example: Default sharing link type in SharePoint"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What should the script do?
+      options:
+        - Only check it (Discover)
+        - Check it and change it (Enforce)
+        - Other improvement
+    validations:
+      required: true
+  - type: input
+    id: recommended
+    attributes:
+      label: Recommended state
+      placeholder: "Example: Off"
+  - type: input
+    id: portal
+    attributes:
+      label: Portal location or documentation link
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+    validations:
+      required: true

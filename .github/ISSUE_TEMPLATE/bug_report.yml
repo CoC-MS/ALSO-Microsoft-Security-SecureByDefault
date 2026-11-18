@@ -1,0 +1,96 @@
+name: Bug report
+description: Report a reproducible problem with the Secure by Default script, its report, or the site.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve ALSO Secure by Default.
+
+        Do not disclose security vulnerabilities in public issues. Do not include credentials, customer information, tenant IDs, tokens, certificates, or unredacted logs or screenshots.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Select where the problem occurs.
+      options:
+        - Audit log
+        - Users and guests (Entra)
+        - App consent
+        - Break-glass accounts
+        - Sign-in methods
+        - SharePoint and OneDrive sharing
+        - Devices and Intune
+        - Defender
+        - Conditional Access baseline
+        - Intune policy baseline
+        - Microsoft Purview
+        - Copilot or Teams settings
+        - Wipe mode
+        - HTML report
+        - Site or documentation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Discover
+        - Enforce
+        - Wipe
+        - Not applicable
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: PowerShell version and operating system
+      placeholder: "Example: PowerShell 7.5, Windows 11"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Script version or commit
+      placeholder: "Example: commit abc1234, or date downloaded"
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the message shown in the console or the report row.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run the script in ... mode
+        2. Answer ... to the prompt
+        3. See the error
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Sanitized output or screenshots
+      description: Remove tenant names, domains, user names, IDs and tokens first.
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I removed all credentials, secrets, customer information, tenant identifiers and tokens.
+          required: true
+        - label: I reviewed existing issues and did not find a matching report.
+          required: true
