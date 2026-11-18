@@ -2574,12 +2574,13 @@ function Step-WipeTenantSettings {
                 $en = @($a.policy.rules | Where-Object { $_.id -eq 'Enablement_EndUser_Assignment' }) | Select-Object -First 1
                 $rn = "$($a.roleDefinitionId)"; try { $rn = (Graph GET "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/$($a.roleDefinitionId)").displayName } catch { }
                 $pUri = "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies/$($a.policyId)/rules"; $en0 = $en
-                $undo = {
-                    $tg = @{ '@odata.type' = 'microsoft.graph.unifiedRoleManagementPolicyRuleTarget'; caller = 'EndUser'; operations = @('all'); level = 'Assignment'; inheritableSettings = @(); enforcedSettings = @() }
-                    Graph PATCH "$pUri/AuthenticationContext_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyAuthenticationContextRule'; id = 'AuthenticationContext_EndUser_Assignment'; isEnabled = $false; claimValue = ''; target = $tg } | Out-Null
-                    $rules = [object[]]@(@($en0.enabledRules) + 'MultiFactorAuthentication' | Where-Object { $_ } | Select-Object -Unique)
-                    Graph PATCH "$pUri/Enablement_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'; id = 'Enablement_EndUser_Assignment'; enabledRules = $rules; target = $tg } | Out-Null
-                }.GetNewClosure()
+                $rulesLit = (@(@($en0.enabledRules) + 'MultiFactorAuthentication' | Where-Object { $_ } | Select-Object -Unique) | ForEach-Object { "'" + ("$_" -replace "'", "''") + "'" }) -join ','
+                # built from text (not a closure) so that the script's own functions such as Graph stay visible
+                $undo = [scriptblock]::Create(@"
+`$tg = @{ '@odata.type' = 'microsoft.graph.unifiedRoleManagementPolicyRuleTarget'; caller = 'EndUser'; operations = @('all'); level = 'Assignment'; inheritableSettings = @(); enforcedSettings = @() }
+Graph PATCH '$pUri/AuthenticationContext_EndUser_Assignment' @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyAuthenticationContextRule'; id = 'AuthenticationContext_EndUser_Assignment'; isEnabled = `$false; claimValue = ''; target = `$tg } | Out-Null
+Graph PATCH '$pUri/Enablement_EndUser_Assignment' @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'; id = 'Enablement_EndUser_Assignment'; enabledRules = [object[]]@($rulesLit); target = `$tg } | Out-Null
+"@)
                 & $add 'PrivilegedAccess' "Entra role '$rn' activation requirement: from authentication context to multifactor authentication (Microsoft default)" $undo
             }
         }
