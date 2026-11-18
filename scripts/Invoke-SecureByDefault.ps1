@@ -66,7 +66,7 @@ function Add-Result {
         'Drift'     { "${Setting}: currently '$Current', should be '$Expected'" }
         'Error'     { "${Setting}: could not change from '$Current' to '$Expected'" }
         'Skipped'   { "${Setting}: skipped - $Current" }
-        'Info'      { if ($Step -eq 'Licensing') { "${Setting}: $Current" } else { "${Setting}: $Current (reference: $Expected)" } }
+        'Info'      { if ($Step -eq 'Licensing') { "${Setting}: $Current" } elseif ($Mode -eq 'Wipe' -and $Current -eq 'None found') { "${Setting}: none found, nothing to remove" } else { "${Setting}: $Current (reference: $Expected)" } }
         default     { "${Setting}: $Current (reference: $Expected)" }
     }
     Write-Host ("  [{0,-9}] {1}" -f $Status, $msg) -ForegroundColor $color
@@ -184,6 +184,7 @@ function Graph($Method, $Uri, $Body) {
         $raw = "$($_.ErrorDetails.Message)"
         if (-not $raw) { try { $raw = $_.Exception.Response.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { } }
         if ($raw) {
+            $j = $raw.IndexOf('{'); if ($j -gt 0) { $raw = $raw.Substring($j) }
             try { $e = ($raw | ConvertFrom-Json).error; $m = (@($e.code, $e.message) | Where-Object { $_ }) -join ': ' } catch { $m = $raw }
         }
         $status = ''
@@ -2272,9 +2273,12 @@ function Remove-Items([string]$Step, [string]$Noun, $Items, [scriptblock]$Name, 
     $sel = @(Select-Removal $Items $Noun $Name)
     foreach ($i in $Items) {
         $n = & $Name $i
-        if ($sel -notcontains $i) { Add-Result $Step $n 'Left in place' 'Removed' Skipped $Link $Why; continue }
-        try { & $Delete $i; Add-Result $Step $n 'Present' 'Removed' Fixed $Link $Why }
-        catch { Add-Result $Step $n 'Present' 'Removed' Error $Link "$($_.Exception.Message)" }
+        $s = if ($i.PSObject.Properties['Setting'] -and $i.Setting) { $i.Setting } else { $n }
+        $from = if ($i.PSObject.Properties['From'] -and $i.From) { $i.From } else { 'Present' }
+        $to = if ($i.PSObject.Properties['To'] -and $i.To) { $i.To } else { 'Removed' }
+        if ($sel -notcontains $i) { Add-Result $Step $s 'Left in place' $to Skipped $Link $Why; continue }
+        try { & $Delete $i; Add-Result $Step $s $from $to Fixed $Link $Why }
+        catch { Add-Result $Step $s $from $to Error $Link "$($_.Exception.Message)" }
     }
 }
 
@@ -2315,14 +2319,6 @@ function Step-WipeConditionalAccess {
     $pol = @($live | Where-Object { $_.displayName -in $names } | ForEach-Object { [pscustomobject]@{ Name = "$($_.displayName) (currently $($stateTxt["$($_.state)"]))"; Uri = "$caBase/$($_.id)" } })
     Remove-Items 'ConditionalAccess' 'ALSO Conditional Access policies' $pol { param($x) $x.Name } { param($x) Graph DELETE $x.Uri | Out-Null } $link 'Policies that are switched on stop protecting users as soon as they are removed. Only policies with the exact ALSO names are listed; your own policies are never touched.'
 
-    Set-Group 'Authentication contexts'
-    $ctxUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences'
-    $ctx = @()
-    foreach ($c in @(Get-PackageJson $dir 'AuthenticationContext')) {
-        try { $have = Graph GET "$ctxUri/$($c.Json.id)"; if ($have.id) { $ctx += [pscustomobject]@{ Name = "Authentication context: $($have.displayName)"; Uri = "$ctxUri/$($have.id)" } } } catch { if ("$($_.Exception.Message)" -notmatch 'NotFound|404|does not exist') { Write-Host "   Could not read authentication context $($c.Json.id): $($_.Exception.Message)" -ForegroundColor Yellow } }
-    }
-    Remove-Items 'ConditionalAccess' 'ALSO authentication contexts' $ctx { param($x) $x.Name } { param($x) Graph DELETE $x.Uri | Out-Null } $link 'An authentication context cannot be removed while a Conditional Access policy still uses it. Remove the policies first.'
-
     Set-Group 'Groups created for the ALSO policies'
     $grp = @()
     foreach ($g in @(Get-PackageJson $dir 'Groups')) {
@@ -2334,6 +2330,25 @@ function Step-WipeConditionalAccess {
         }
     }
     Remove-Items 'ConditionalAccess' 'groups created for the ALSO policies' $grp { param($x) $x.Name } { param($x) Remove-FromRestrictedUnit $x.Id; Graph DELETE "https://graph.microsoft.com/v1.0/groups/$($x.Id)" | Out-Null } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/GroupsManagementMenuBlade/~/AllGroups' 'Only groups with the description "ALSO Conditional Access baseline group" are listed, so groups you made yourself are never removed.'
+}
+
+function Step-WipeAuthContexts {
+    Write-Step 'Remove authentication contexts' 'Removed last, after the Conditional Access policies and the admin role activation settings that use them are gone.'
+    Set-Group 'Authentication contexts'
+    $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/AuthenticationContext'
+    $ctxUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences'
+    $ctx = @()
+    foreach ($c in @(Get-PackageJson (Get-GuidePackage 'conditional-access') 'AuthenticationContext')) {
+        try { $have = Graph GET "$ctxUri/$($c.Json.id)"; if ($have.id) { $ctx += [pscustomobject]@{ Name = "Authentication context: $($have.displayName)"; Uri = "$ctxUri/$($have.id)" } } } catch { if ("$($_.Exception.Message)" -notmatch 'NotFound|404|does not exist') { Write-Host "   Could not read authentication context $($c.Json.id): $($_.Exception.Message)" -ForegroundColor Yellow } }
+    }
+    Remove-Items 'ConditionalAccess' 'ALSO authentication contexts' $ctx { param($x) $x.Name } {
+        param($x)
+        try { Graph DELETE $x.Uri | Out-Null }
+        catch {
+            if ("$($_.Exception.Message)" -match 'referenced by one or more policies|3001') { throw 'Still in use: a Conditional Access policy or a privileged role setting (for example Azure roles in Privileged Identity Management, which Wipe leaves unchanged) still refers to it. Remove that reference in the portal, then run Wipe again.' }
+            throw
+        }
+    } $link 'An authentication context cannot be removed while a Conditional Access policy or a Privileged Identity Management role setting still uses it.'
 }
 
 function Step-WipeIntunePolicies {
@@ -2453,15 +2468,19 @@ function Step-WipeTenantSettings {
     $items = New-Object System.Collections.ArrayList
     $add = {
         param($Step, $Text, $Do)
-        if ($Step -in $Steps) { [void]$items.Add([pscustomobject]@{ Name = $Text; Do = $Do }) }
+        if ($Step -notin $Steps) { return }
+        $o = [pscustomobject]@{ Name = $Text; Do = $Do; Setting = $null; From = $null; To = $null }
+        if ($Text -match '^(.*?): from (.+?) to (.+)$') { $o.Setting = $Matches[1]; $o.From = $Matches[2]; $o.To = $Matches[3] }
+        [void]$items.Add($o)
     }
+    $shareTxt = @{ disabled = 'Only people in your organization'; existingExternalUserSharingOnly = 'Existing guests only'; externalUserSharingOnly = 'New and existing guests'; externalUserAndGuestSharing = 'Anyone' }
     $authUri = 'https://graph.microsoft.com/v1.0/policies/authorizationPolicy'
     try {
         $p = Graph GET $authUri; $d = $p.defaultUserRolePermissions
         if ($d.allowedToCreateApps -eq $false) { & $add 'UserSettings' 'Users can register applications: from No to Yes' { Graph PATCH $authUri @{ defaultUserRolePermissions = @{ allowedToCreateApps = $true } } | Out-Null } }
         if ($d.allowedToCreateTenants -eq $false) { & $add 'UserSettings' 'Non-admin users can create tenants: from No to Yes' { Graph PATCH $authUri @{ defaultUserRolePermissions = @{ allowedToCreateTenants = $true } } | Out-Null } }
         if ($d.allowedToCreateSecurityGroups -eq $false) { & $add 'UserSettings' 'Users can create security groups: from No to Yes' { Graph PATCH $authUri @{ defaultUserRolePermissions = @{ allowedToCreateSecurityGroups = $true } } | Out-Null } }
-        if ("$($p.guestUserRoleId)" -ne 'a0b1b346-4d3e-4e8b-98f8-753987be4970' -and "$($p.guestUserRoleId)" -ne '10dae51f-b6af-4016-8d66-8c2a99b929b3') { & $add 'UserSettings' 'Guest user access: back to Limited access (Microsoft default)' { Graph PATCH $authUri @{ guestUserRoleId = '10dae51f-b6af-4016-8d66-8c2a99b929b3' } | Out-Null } }
+        if ("$($p.guestUserRoleId)" -ne 'a0b1b346-4d3e-4e8b-98f8-753987be4970' -and "$($p.guestUserRoleId)" -ne '10dae51f-b6af-4016-8d66-8c2a99b929b3') { & $add 'UserSettings' 'Guest user access: from Restricted access to Limited access (Microsoft default)' { Graph PATCH $authUri @{ guestUserRoleId = '10dae51f-b6af-4016-8d66-8c2a99b929b3' } | Out-Null } }
         $assigned = @($d.permissionGrantPoliciesAssigned)
         if ($assigned | Where-Object { $_ -match 'default-low' }) {
             & $add 'Consent' 'User consent for apps: from verified publishers and low-impact permissions to the Microsoft-managed default' {
@@ -2472,24 +2491,25 @@ function Step-WipeTenantSettings {
     catch { Add-Result 'UserSettings' 'Reading the user settings' $_.Exception.Message 'Readable' Error 'https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/UserSettings' }
     try {
         $wUri = 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
-        if ((Graph GET $wUri).isEnabled -eq $true) { & $add 'Consent' 'Admin consent request workflow: from enabled to disabled' { Graph PUT $wUri @{ isEnabled = $false; notifyReviewers = $false; remindersEnabled = $false; requestDurationInDays = 30; reviewers = @() } | Out-Null } }
+        if ((Graph GET $wUri).isEnabled -eq $true) { & $add 'Consent' 'Admin consent request workflow: from Enabled to Disabled' { Graph PUT $wUri @{ isEnabled = $false; notifyReviewers = $false; remindersEnabled = $false; requestDurationInDays = 30; reviewers = @() } | Out-Null } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $sp = 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings'; $t = Graph GET $sp
-        if ("$($t.sharingCapability)" -in 'disabled', 'existingExternalUserSharingOnly', 'externalUserSharingOnly') { & $add 'Sharepoint' "SharePoint and OneDrive external sharing: from $($t.sharingCapability) to externalUserAndGuestSharing (Anyone, Microsoft default)" { Graph PATCH $sp @{ sharingCapability = 'externalUserAndGuestSharing' } | Out-Null } }
+        if ("$($t.sharingCapability)" -in 'disabled', 'existingExternalUserSharingOnly', 'externalUserSharingOnly') { & $add 'Sharepoint' "SharePoint and OneDrive external sharing: from $($shareTxt["$($t.sharingCapability)"]) to Anyone (Microsoft default)" { Graph PATCH $sp @{ sharingCapability = 'externalUserAndGuestSharing' } | Out-Null } }
         if ($t.isResharingByExternalUsersEnabled -eq $false) { & $add 'Sharepoint' 'Guests can share items they do not own: from No to Yes' { Graph PATCH $sp @{ isResharingByExternalUsersEnabled = $true } | Out-Null } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $mdm = 'https://graph.microsoft.com/beta/policies/mobileDeviceManagementPolicies'
-        $pol = (Graph GET $mdm).value | Where-Object { $_.displayName -match 'Intune' } | Select-Object -First 1
-        if ($pol -and "$($pol.appliesTo)" -ne 'none') { & $add 'IntuneEnrollment' 'Automatic Intune enrollment (MDM user scope): back to None' { Graph PATCH "$mdm/$($pol.id)" @{ appliesTo = 'none' } | Out-Null } }
+        $mdmPol = (Graph GET $mdm).value | Where-Object { $_.displayName -match 'Intune' } | Select-Object -First 1
+        $mdmScope = @{ all = 'All users'; selected = 'Some users' }["$($mdmPol.appliesTo)"]
+        if ($mdmPol -and "$($mdmPol.appliesTo)" -ne 'none') { & $add 'IntuneEnrollment' "Automatic Intune enrollment (MDM user scope): from $mdmScope to None" { Graph PATCH "$mdm/$($mdmPol.id)" @{ appliesTo = 'none' } | Out-Null } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $dr = Graph GET 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
-        if ($dr.localAdminPassword.isEnabled -eq $true) { & $add 'Laps' 'Entra LAPS: from enabled to disabled' { Set-DeviceRegPolicy { param($x) $x.localAdminPassword.isEnabled = $false } } }
+        if ($dr.localAdminPassword.isEnabled -eq $true) { & $add 'Laps' 'Entra LAPS: from Enabled to Disabled' { Set-DeviceRegPolicy { param($x) $x.localAdminPassword.isEnabled = $false } } }
         if ($dr.azureADJoin.localAdmins.enableGlobalAdmins -eq $false) { & $add 'Laps' 'Global administrators become local admin on joined devices: from No to Yes (Microsoft default)' { Set-DeviceRegPolicy { param($x) $x.azureADJoin.localAdmins.enableGlobalAdmins = $true } } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
@@ -2504,7 +2524,7 @@ function Step-WipeTenantSettings {
         if ($def) {
             $blockedNow = @(@('windowsRestriction', 'iosRestriction', 'androidRestriction', 'androidForWorkRestriction', 'macOSRestriction') | Where-Object { $r = $def[$_]; $r -and $r['personalDeviceEnrollmentBlocked'] -eq $true })
             if ($blockedNow.Count) {
-                & $add 'IntuneEnrollment' 'Personally owned devices blocked from enrolling: back to allowed (Microsoft default)' {
+                & $add 'IntuneEnrollment' 'Personally owned devices blocked from enrolling: from Blocked to Allowed (Microsoft default)' {
                     $body = @{ '@odata.type' = "$($def.'@odata.type')" }
                     foreach ($p in $blockedNow) { $r = [ordered]@{}; $src = $def[$p]; foreach ($kk in @($src.Keys)) { $r[$kk] = $src[$kk] }; $r['personalDeviceEnrollmentBlocked'] = $false; $body[$p] = $r }
                     Graph PATCH "$ecUri/$($def.id)" $body | Out-Null
@@ -2517,13 +2537,13 @@ function Step-WipeTenantSettings {
         $gSp = @(Get-AllPages 'https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq ''00000003-0000-0000-c000-000000000000''&$select=id') | Select-Object -First 1
         $clsUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($gSp.id)/delegatedPermissionClassifications"
         $lowNow = @(Get-AllPages $clsUri | Where-Object { $_.classification -eq 'low' -and "$($_.permissionName)" -in 'profile', 'openid', 'offline_access', 'User.Read', 'email' })
-        if ($lowNow.Count) { & $add 'Consent' "Low-impact permissions list (profile, openid, offline_access, User.Read, email): remove the $($lowNow.Count) entries on the list (Microsoft default is an empty list)" { foreach ($c in $lowNow) { Graph DELETE "$clsUri/$($c.id)" | Out-Null } } }
+        if ($lowNow.Count) { & $add 'Consent' "Low-impact permissions list (profile, openid, offline_access, User.Read, email): from $($lowNow.Count) entries to an empty list (Microsoft default)" { foreach ($c in $lowNow) { Graph DELETE "$clsUri/$($c.id)" | Out-Null } } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
-        $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
-        if ($pol -and $pol.isEnabled -eq $true) { & $add 'Consent' 'Default Agent Identity inactivity lifecycle policy: from enabled to disabled' { Graph PATCH "$lpUri/$($pol.id)" @{ '@odata.type' = "$($pol.'@odata.type')"; isEnabled = $false } | Out-Null } }
+        $lcPol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
+        if ($lcPol -and $lcPol.isEnabled -eq $true) { & $add 'Consent' 'Default Agent Identity inactivity lifecycle policy: from Enabled to Disabled' { Graph PATCH "$lpUri/$($lcPol.id)" @{ '@odata.type' = "$($lcPol.'@odata.type')"; isEnabled = $false } | Out-Null } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     if ('Copilot' -in $Steps) {
@@ -2560,7 +2580,7 @@ function Step-WipeTenantSettings {
                     $rules = [object[]]@(@($en0.enabledRules) + 'MultiFactorAuthentication' | Where-Object { $_ } | Select-Object -Unique)
                     Graph PATCH "$pUri/Enablement_EndUser_Assignment" @{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'; id = 'Enablement_EndUser_Assignment'; enabledRules = $rules; target = $tg } | Out-Null
                 }.GetNewClosure()
-                & $add 'PrivilegedAccess' "Entra role '$rn': authentication context on activation removed, multifactor authentication required instead (Microsoft default)" $undo
+                & $add 'PrivilegedAccess' "Entra role '$rn' activation requirement: from authentication context to multifactor authentication (Microsoft default)" $undo
             }
         }
         catch { Write-Host "   Entra role activation settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
@@ -2587,6 +2607,7 @@ function Invoke-Wipe {
     foreach ($s in 'ConditionalAccess', 'IntunePolicies', 'Purview', 'BreakGlass', 'TenantSettings') {
         if ($s -eq 'TenantSettings' -or $s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
+    if ('ConditionalAccess' -in $Steps) { Invoke-Safe 'ConditionalAccess' { Step-WipeAuthContexts } }
     Write-Step 'Settings that are left as they are' 'Wipe never switches these off.'
     Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults, the other authentication methods, the Defender settings, the Exchange Online protection presets and the authentication context on Azure roles stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
 }
