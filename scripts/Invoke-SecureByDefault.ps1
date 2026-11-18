@@ -1983,53 +1983,22 @@ function Step-Purview {
             }
             if ($retRow.Count -and -not $Force) { $doRet = Confirm-Change 'Also deploy the optional 7-year Exchange retention policy (mail is DELETED after 7 years - get legal approval first)' -Always }
             if ($go -or $doRet) {
-                $mods = Join-Path $tk 'Purview\Modules'
-                . (Join-Path $mods 'PurviewRunLog.ps1'); Initialize-PurviewRunLog
-                $ti = [pscustomobject]@{ DisplayName = $org.displayName; TenantId = $org.id; DefaultDomain = [string]($org.verifiedDomains | Where-Object { $_.isDefault } | Select-Object -First 1).name; InitialDomain = $initialDomain; AllDomains = @($org.verifiedDomains | ForEach-Object { $_.name }); Source = 'Microsoft Graph organization' }
-                $run = {
-                    param($Name, $Body)
-                    $sw = [Diagnostics.Stopwatch]::StartNew()
-                    $origEap = $global:ErrorActionPreference; $origCp = $global:ConfirmPreference; $global:ErrorActionPreference = 'Stop'; $global:ConfirmPreference = 'None'
-                    try {
-                        $err = @()
-                        & $Body
-                        Write-Host ("   Finished {0} in {1:n0} seconds." -f $Name, $sw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
-                        if ($err.Count) { $errText = (($err | Select-Object -First 3 | ForEach-Object { "- $_" }) -join "`n"); Add-Result 'Purview' "Deploying: $Name" "$($err.Count) problem(s)" 'Deployed without problems' Error $repo $errText $doc $docText }
-                        $true
-                    }
-                    catch { Add-Result 'Purview' "Deploying: $Name" $_.Exception.Message 'Deployed' Error $repo 'The ALSO Purview toolkit stopped with this error. The script continues with the next part. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText; $false }
-                    finally { $global:ErrorActionPreference = $origEap; $global:ConfirmPreference = $origCp }
+                $cfgOut = Join-Path $env:TEMP ("sbd-purview-config-" + [guid]::NewGuid().ToString('N') + '.psd1')
+                [IO.File]::WriteAllText($cfgOut, (ConvertTo-Psd1 $config), (New-Object Text.UTF8Encoding($false)))
+                $dArgs = @('-NoProfile', '-File', (Join-Path $tk 'Purview\Deploy-PurviewBestPractice.ps1'), '-TenantAdminUpn', $script:MeUpn, '-SharePointAdminUrl', $SharePointAdminUrl, '-ConfigPath', $cfgOut, '-SkipTenantSettings', '-NoLicenseAutoDetect', '-AutoInstallModules', '-NoReport')
+                if (-not ($go -and $partKeys -contains 'labels')) { $dArgs += '-SkipLabels' }
+                if (-not ($go -and ($partKeys -contains 'dlp' -or $partKeys -contains 'sit'))) { $dArgs += '-SkipDLP' }
+                if (-not ($go -and $partKeys -contains 'ai' -and $tier -eq 'Full')) { $dArgs += '-SkipAIControls' }
+                if ($doRet) { $dArgs += '-ApplyRetention' }
+                if ($adopt) { $dArgs += '-AdoptExisting' }
+                if ($tier -ne 'Full') { $dArgs += '-BPOnly' }
+                Write-Host '   Running ALSO''s original Purview deployment script with exactly your selection. It signs in to Exchange, Purview and SharePoint itself, and label changes can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
+                try {
+                    & ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) @dArgs
+                    if ($LASTEXITCODE -ne 0) { Add-Result 'Purview' 'Deploying the Purview baseline' "ALSO's Purview script stopped (exit code $LASTEXITCODE)" 'Deployed' Error $repo 'See the console output above for the reason. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText }
                 }
-                if ($go) {
-                    if ($partKeys -contains 'labels') {
-                        $a = @{ Config = $config; TenantIdentity = $ti }; if ($adopt) { $a.AdoptExisting = $true }
-                        Write-Host '   Deploying sensitivity labels and label policy. Microsoft processes label changes slowly: this part can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
-                        $null = & $run 'sensitivity labels and label policy' { & (Join-Path $mods 'Setup-SensitivityLabels.ps1') @a }
-                    }
-                    if ($partKeys -contains 'dlp') {
-                        $a = @{ Config = $config }; if ($adopt) { $a.AdoptExisting = $true }; if ($tier -ne 'Full') { $a.BPOnly = $true }
-                        Write-Host '   Deploying label-based DLP policies...' -ForegroundColor Cyan
-                        $null = & $run 'label-based DLP' { & (Join-Path $mods 'Setup-DLP.ps1') @a }
-                    }
-                    if ($partKeys -contains 'sit') {
-                        Write-Host '   Deploying sensitive-data DLP policies...' -ForegroundColor Cyan
-                        $null = & $run 'sensitive-data DLP' {
-                            $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $tk 'Purview\Deploy-PurviewBestPractice.ps1'), [ref]$null, [ref]$null)
-                            $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-AlsoSitDlp' }, $true)
-                            . ([scriptblock]::Create($fn.Extent.Text))
-                            Invoke-AlsoSitDlp -Config $config
-                        }
-                    }
-                    if ($partKeys -contains 'ai' -and $tier -eq 'Full') {
-                        $a = @{ Config = $config }; if ($adopt) { $a.AdoptExisting = $true }
-                        Write-Host '   Deploying AI protection...' -ForegroundColor Cyan
-                        $null = & $run 'AI protection' { & (Join-Path $mods 'Setup-AIGovernance.ps1') @a }
-                    }
-                }
-                if ($doRet) {
-                    $a = @{ Config = $config }; if ($adopt) { $a.AdoptExisting = $true }
-                    $null = & $run 'retention' { & (Join-Path $mods 'Setup-Retention.ps1') @a }
-                }
+                catch { Add-Result 'Purview' 'Deploying the Purview baseline' $_.Exception.Message 'Deployed' Error $repo 'ALSO''s Purview script could not be started or stopped with an error. Run the script again after fixing the cause.' $doc $docText }
+                finally { Remove-Item $cfgOut -Force -ErrorAction SilentlyContinue }
                 $deployed = $true
                 Write-Host '   Reading the tenant again to verify the result...' -ForegroundColor Cyan
                 Clear-PvCache
