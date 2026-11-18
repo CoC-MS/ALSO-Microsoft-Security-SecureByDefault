@@ -1082,13 +1082,13 @@ function Step-EmailAuth {
     Write-Step 'Email authentication (SPF, DKIM, DMARC)' 'Looks up the public DNS records of your domains. Recommendations only - nothing is changed.'
     $link = 'https://admin.cloud.microsoft/?#/Domains'
     $doc = $GuideBase + '#email-authentication'; $docText = 'ALSO guide: SPF, DKIM and DMARC (Email, apps and collaboration, step 2)'
-    $domains = @((Graph GET 'https://graph.microsoft.com/v1.0/domains').value | Where-Object { $_.isVerified -and $_.name -notlike '*.onmicrosoft.com' -and $_.supportedServices -contains 'Email' })
+    $domains = @((Graph GET 'https://graph.microsoft.com/v1.0/domains').value | Where-Object { $_.isVerified -and $_.id -notlike '*.onmicrosoft.com' -and $_.supportedServices -contains 'Email' })
     if (-not $domains.Count) {
         Add-Result 'EmailAuth' 'Custom email domains' 'None found (only the onmicrosoft.com domain)' 'SPF, DKIM and DMARC set for each sending domain' Info $link 'No verified custom domain with email enabled was found, so there is nothing to scan. When you add a domain, publish SPF, DKIM and DMARC for it.' $doc $docText
         return
     }
     foreach ($d in $domains) {
-        $n = $d.name
+        $n = $d.id
         Set-Group "Domain: $n"
         $txt = Get-DnsRecords $n 'TXT'
         if ($null -eq $txt) { Add-Result 'EmailAuth' "$n - DNS lookup" 'Could not be looked up from this computer' 'Records readable' Manual $link 'The public DNS lookup failed (no internet access to public DNS or a firewall blocks it). Check SPF, DKIM and DMARC for this domain by hand.' $doc $docText; continue }
