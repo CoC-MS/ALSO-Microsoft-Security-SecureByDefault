@@ -1773,6 +1773,42 @@ function Step-IntunePolicies {
     catch { }
 }
 
+function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 900) {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $psi.Arguments = (@($ChildArgs) | ForEach-Object { '"' + (("$_") -replace '"', '\"') + '"' }) -join ' '
+    $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    $tOut = $p.StandardOutput.ReadLineAsync(); $tErr = $p.StandardError.ReadLineAsync()
+    $outDone = $false; $errDone = $false
+    $last = [DateTime]::UtcNow; $lastBeat = $last; $lastLine = ''
+    while (-not ($outDone -and $errDone)) {
+        $got = $false
+        if (-not $outDone -and $tOut.IsCompleted) {
+            $l = $tOut.Result
+            if ($null -eq $l) { $outDone = $true } else { $got = $true; $lastLine = $l; Write-Host $l; $tOut = $p.StandardOutput.ReadLineAsync() }
+        }
+        if (-not $errDone -and $tErr.IsCompleted) {
+            $l = $tErr.Result
+            if ($null -eq $l) { $errDone = $true } else { $got = $true; Write-Host $l -ForegroundColor Red; $tErr = $p.StandardError.ReadLineAsync() }
+        }
+        if ($got) { $last = [DateTime]::UtcNow; $lastBeat = $last; continue }
+        $quiet = ([DateTime]::UtcNow - $last).TotalSeconds
+        if ($quiet -ge $SilentLimitSec) {
+            Write-Host "   No progress for $([int]($SilentLimitSec / 60)) minutes - stopping the Purview script." -ForegroundColor Red
+            try { & taskkill.exe /PID $p.Id /T /F | Out-Null } catch { try { $p.Kill() } catch { } }
+            return [pscustomobject]@{ Code = -1; TimedOut = $true; LastLine = $lastLine }
+        }
+        if (([DateTime]::UtcNow - $lastBeat).TotalSeconds -ge 60) {
+            $lastBeat = [DateTime]::UtcNow
+            Write-Host ("   ...still waiting for Microsoft ({0} min without news). Last step: {1}" -f [int][Math]::Floor($quiet / 60), $lastLine.Trim()) -ForegroundColor DarkGray
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $p.WaitForExit()
+    [pscustomobject]@{ Code = $p.ExitCode; TimedOut = $false; LastLine = $lastLine }
+}
+
 function ConvertTo-Psd1($v) {
     if ($null -eq $v) { return '$null' }
     if ($v -is [bool]) { return $(if ($v) { '$true' } else { '$false' }) }
@@ -2099,8 +2135,14 @@ function Step-Purview {
                 if ($tier -ne 'Full') { $dArgs += '-BPOnly' }
                 Write-Host '   Deploying your Purview selection. You may be asked to sign in to Exchange, Purview and SharePoint, and label changes can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
                 try {
-                    & ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) @dArgs
-                    if ($LASTEXITCODE -ne 0) { Add-Result 'Purview' 'Deploying the Purview baseline' "ALSO's Purview script stopped (exit code $LASTEXITCODE)" 'Deployed' Error $repo 'See the console output above for the reason. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText }
+                    $res = Invoke-PvChild $dArgs 900
+                    if ($res.TimedOut -and ($dArgs -notcontains '-SkipLabels') -and ($res.LastLine -match 'label|priority')) {
+                        Add-Result 'Purview' 'Sensitivity label order' 'Microsoft did not answer while the label order was being set' 'Labels in ALSO order' Manual $repo 'The labels themselves were created or found. Setting their order stalled on the Microsoft side. The script continues with the other Purview parts now. In the Purview portal (Information protection > Labels) check the label order, or run the script again later.' $doc $docText
+                        Write-Host '   Continuing with the remaining Purview parts (without the label step)...' -ForegroundColor Cyan
+                        $res = Invoke-PvChild ($dArgs + '-SkipLabels') 900
+                    }
+                    if ($res.TimedOut) { Add-Result 'Purview' 'Deploying the Purview baseline' "Microsoft stopped answering. Last step: $($res.LastLine)" 'Deployed' Error $repo 'The Purview script was stopped after 15 minutes without progress. Run the script again later; completed parts are not repeated.' $doc $docText }
+                    elseif ($res.Code -ne 0) { Add-Result 'Purview' 'Deploying the Purview baseline' "ALSO's Purview script stopped (exit code $($res.Code))" 'Deployed' Error $repo 'See the console output above for the reason. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText }
                 }
                 catch { Add-Result 'Purview' 'Deploying the Purview baseline' $_.Exception.Message 'Deployed' Error $repo 'ALSO''s Purview script could not be started or stopped with an error. Run the script again after fixing the cause.' $doc $docText }
                 finally { Remove-Item $cfgOut -Force -ErrorAction SilentlyContinue }
