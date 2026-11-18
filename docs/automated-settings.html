@@ -28,7 +28,7 @@ table.set td:first-child{font-weight:600;width:42%}
 <body>
 <header>
   <a class="logo" href="index.html" aria-label="ALSO Secure by Default"><img src="also-logo.png" alt="ALSO"><span class="brand-divider"></span><span class="brand-product">Secure by Default Automation Script</span><span class="brand-preview">Public Preview</span></a>
-  <nav><a href="index.html#demo">Demo</a><a href="index.html#why">Why</a><a href="index.html#covers">What it covers</a><a href="automated-settings.html">Automated settings</a><a href="index.html#how">How it works</a><a href="index.html#start">Get started</a></nav>
+  <nav><a href="index.html#why">Why</a><a href="index.html#covers">What it covers</a><a href="automated-settings.html">Automated settings</a><a href="index.html#how">How it works</a><a href="index.html#start">Get started</a></nav>
   <a class="btn" href="https://github.com/CoC-MS/ALSO-Microsoft-Security-SecureByDefault">GitHub</a>
 </header>
 
@@ -142,27 +142,27 @@ table.set td:first-child{font-weight:600;width:42%}
   </table>
 
   <h2 id="manual"><span>&bull;</span> Checked automatically, changed by you</h2>
-  <p class="note">Microsoft offers no way to change these automatically, or they depend on your decisions. The script still <b>checks</b> each one in both modes and lists it in the report's <b>Manual checks and actions</b> tab with the explanation. Use the direct links below to open the right portal page.</p>
-  <table class="set"><tr><th>Item</th><th>Recommended state</th><th>Portal</th></tr>
-    <tr><td>Restrict access to Microsoft Entra admin center</td><td>Yes</td><td><a href="https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/UserSettings">Open Entra user settings &#8599;</a></td></tr>
-    <tr><td>Allow users to connect work or school account with LinkedIn</td><td>Business decision (reference: Yes)</td><td><a href="https://entra.microsoft.com/#view/Microsoft_AAD_UsersAndTenants/UserManagementMenuBlade/~/UserSettings">Open Entra user settings &#8599;</a></td></tr>
-    <tr><td>Show keep user signed in</td><td>No</td><td><a href="https://entra.microsoft.com/#view/Microsoft_AAD_IAM/CompanyBrandingMenuBlade/~/CompanyBranding">Open Company branding &#8599;</a></td></tr>
-    <tr><td>Agents and plugins user access</td><td>No users</td><td><a href="https://admin.microsoft.com/#/agents/settings">Open Microsoft 365 admin center &#8599;</a></td></tr>
-    <tr><td>Teams org-wide setting "Third-party apps"</td><td>Off</td><td><a href="https://admin.teams.microsoft.com/policies/manage-apps">Open Teams admin center &#8599;</a></td></tr>
-    <tr><td>Break-glass sign-in alerting and a FIDO2 key on each account</td><td>Alert on every sign-in; one key per account</td><td><a href="https://mysignins.microsoft.com/security-info">Open My Security Info &#8599;</a></td></tr>
-    <tr><td>Phishing-resistant authentication strength in Conditional Access</td><td>Assigned to admins and sensitive access</td><td><a href="https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/AuthStrengths">Open Authentication strengths &#8599;</a></td></tr>
-    <tr><td>Review, test and switch on the imported Conditional Access policies</td><td>Report-only first, then On</td><td><a href="https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies">Open Conditional Access &#8599;</a></td></tr>
-    <tr><td>Default sharing link type, link expiry, OneDrive sharing level</td><td>Specific people, links expire in 30 days</td><td><a href="https://admin.microsoft.com/sharepoint?page=sharing&modern=true">Open SharePoint admin center &#8599;</a></td></tr>
-    <tr><td>Standard preset security policy (Defender for Office 365)</td><td>On for all recipients</td><td><a href="https://security.microsoft.com/presetSecurityPolicies">Open Preset security policies &#8599;</a></td></tr>
-    <tr><td>SPF, DKIM and DMARC for each domain</td><td>SPF with -all, DKIM on, DMARC quarantine or reject</td><td><a href="https://security.microsoft.com/authentication">Open Email authentication &#8599;</a></td></tr>
-    <tr><td>Defender for Business / Endpoint provisioned</td><td>Licensed and devices visible</td><td><a href="https://security.microsoft.com/machines?category=all-devices">Open Defender devices &#8599;</a></td></tr>
-    <tr><td>Intune connection in Defender (first-time switch-on)</td><td>On</td><td><a href="https://security.microsoft.com/securitysettings/endpoints/integration">Open Defender Endpoints settings &#8599;</a></td></tr>
-    <tr><td>Defender for Endpoint macOS app and onboarding files</td><td>Added in Intune</td><td><a href="https://security.microsoft.com/securitysettings/endpoints/onboarding">Open Defender onboarding &#8599;</a></td></tr>
-    <tr><td>Defender incident email notifications</td><td>Sent to the right people</td><td><a href="https://security.microsoft.com/securitysettings/defender/email_notifications">Open Defender notifications &#8599;</a></td></tr>
-    <tr><td>Defender for Identity, Defender for Cloud Apps, app governance</td><td>Deployed and integrated</td><td><a href="https://security.microsoft.com/cloudapps/app-governance">Open Defender portal &#8599;</a></td></tr>
-    <tr><td>Apple MDM push certificate</td><td>Valid for 30+ days (only if you manage Apple devices)</td><td><a href="https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview">Open Intune &#8599;</a></td></tr>
-    <tr><td>Access reviews and administrator review</td><td>Recurring reviews for privileged roles and guests</td><td><a href="https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/Controls">Open Entra access reviews &#8599;</a></td></tr>
-    <tr><td>DLP policies in simulation mode</td><td>Switched on after review</td><td><a href="https://purview.microsoft.com/datalossprevention/policies">Open Purview DLP &#8599;</a></td></tr>
+  <p class="note">Microsoft offers no way to change these automatically. The script still <b>checks</b> each one in both modes and lists it in the report's <b>Manual checks and actions</b> tab with the explanation and direct links to the configuration in the portals.</p>
+  <table class="set"><tr><th>Item</th><th>Recommended state</th></tr>
+    <tr><td>Restrict access to Microsoft Entra admin center</td><td>Yes</td></tr>
+    <tr><td>Allow users to connect work or school account with LinkedIn</td><td>Business decision (reference: Yes)</td></tr>
+    <tr><td>Show keep user signed in</td><td>No</td></tr>
+    <tr><td>Agents and plugins user access</td><td>No users</td></tr>
+    <tr><td>Teams org-wide setting "Third-party apps"</td><td>Off</td></tr>
+    <tr><td>Break-glass sign-in alerting and a FIDO2 key on each account</td><td>Alert on every sign-in; one key per account</td></tr>
+    <tr><td>Phishing-resistant authentication strength in Conditional Access</td><td>Assigned to admins and sensitive access</td></tr>
+    <tr><td>Review, test and switch on the imported Conditional Access policies</td><td>Report-only first, then On</td></tr>
+    <tr><td>Default sharing link type, link expiry, OneDrive sharing level</td><td>Specific people, links expire in 30 days</td></tr>
+    <tr><td>Standard preset security policy (Defender for Office 365)</td><td>On for all recipients</td></tr>
+    <tr><td>SPF, DKIM and DMARC for each domain</td><td>SPF with -all, DKIM on, DMARC quarantine or reject</td></tr>
+    <tr><td>Defender for Business / Endpoint provisioned</td><td>Licensed and devices visible</td></tr>
+    <tr><td>Intune connection in Defender (first-time switch-on)</td><td>On</td></tr>
+    <tr><td>Defender for Endpoint macOS app and onboarding files</td><td>Added in Intune</td></tr>
+    <tr><td>Defender incident email notifications</td><td>Sent to the right people</td></tr>
+    <tr><td>Defender for Identity, Defender for Cloud Apps, app governance</td><td>Deployed and integrated</td></tr>
+    <tr><td>Apple MDM push certificate</td><td>Valid for 30+ days (only if you manage Apple devices)</td></tr>
+    <tr><td>Access reviews and administrator review</td><td>Recurring reviews for privileged roles and guests</td></tr>
+    <tr><td>DLP policies in simulation mode</td><td>Switched on after review</td></tr>
   </table></main>
 <footer>ALSO Secure by Default &middot; Review the reference state against your organization's requirements before enforcing.</footer>
 </body>

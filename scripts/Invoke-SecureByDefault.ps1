@@ -140,7 +140,14 @@ function Wait-Worker($ps, [int]$Seconds, [string]$What) {
     if ($ps.Streams.Error.Count) { throw $ps.Streams.Error[0].Exception.Message }
     $out
 }
+$script:PvCache = @{}
 function Invoke-Timed([string]$Code, [int]$Seconds = 60) {
+    if ($Code -like 'Get-*' -and $script:PvCache.ContainsKey($Code)) { return $script:PvCache[$Code] }
+    $res = Invoke-TimedRaw $Code $Seconds
+    if ($Code -like 'Get-*') { $script:PvCache[$Code] = $res }
+    $res
+}
+function Invoke-TimedRaw([string]$Code, [int]$Seconds = 60) {
     if (-not $script:IppsTok) { return @(& ([scriptblock]::Create($Code))) }
     if (-not $script:IppsWorker) {
         $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
@@ -1997,6 +2004,7 @@ function Step-Purview {
                 }
                 $deployed = $true
                 Write-Host '   Reading the tenant again to verify the result...' -ForegroundColor Cyan
+                $script:PvCache = @{}
                 $final = @(& $check 3>$null)
             }
         }
