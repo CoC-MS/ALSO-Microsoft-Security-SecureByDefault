@@ -2395,15 +2395,15 @@ function Step-WipePurview {
     catch { Add-Result 'Purview' 'DLP policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $dlpL '' }
     Remove-Items 'Purview' 'ALSO DLP policies' $dlp { param($x) $x.Name } {
         param($x)
-        foreach ($r in @(Get-DlpComplianceRule -Policy $x.Id -ErrorAction SilentlyContinue)) { Remove-DlpComplianceRule -Identity $r.Name -Confirm:$false -ErrorAction Stop }
-        Remove-DlpCompliancePolicy -Identity $x.Id -Confirm:$false -ErrorAction Stop
+        foreach ($r in @(Get-DlpComplianceRule -Policy $x.Id -ErrorAction SilentlyContinue)) { Remove-DlpComplianceRule -Identity $r.Name -Confirm:$false -WarningAction SilentlyContinue -ErrorAction Stop }
+        Remove-DlpCompliancePolicy -Identity $x.Id -Confirm:$false -WarningAction SilentlyContinue -ErrorAction Stop
     } $dlpL 'Removing a DLP policy stops protection for the data it covered. Microsoft can take up to an hour to finish removing it.'
 
     Set-Group 'Label policy and sensitivity labels'
     $lp = @()
     try { $lp = @(Get-LabelPolicy -ErrorAction Stop | Where-Object { $_.Name -eq $config.LabelPolicy.Name } | ForEach-Object { [pscustomobject]@{ Name = "Label policy: $($_.Name)"; Id = $_.Name } }) }
     catch { Add-Result 'Purview' 'Label policy' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'https://purview.microsoft.com/informationprotection/labelpolicies' '' }
-    Remove-Items 'Purview' 'ALSO label policy' $lp { param($x) $x.Name } { param($x) Remove-LabelPolicy -Identity $x.Id -Confirm:$false -ErrorAction Stop } 'https://purview.microsoft.com/informationprotection/labelpolicies' 'Users no longer see the ALSO labels in Office apps after the policy is removed.'
+    Remove-Items 'Purview' 'ALSO label policy' $lp { param($x) $x.Name } { param($x) Remove-LabelPolicy -Identity $x.Id -Confirm:$false -WarningAction SilentlyContinue -ErrorAction Stop } 'https://purview.microsoft.com/informationprotection/labelpolicies' 'Users no longer see the ALSO labels in Office apps after the policy is removed.'
 
     $labelNames = @($config.Labels | ForEach-Object { $_.Name; @($_.SubLabels | Where-Object { $_ } | ForEach-Object { $_.Name }) })
     $lab = @()
@@ -2412,7 +2412,7 @@ function Step-WipePurview {
         $lab = @(@($all | Where-Object { $_.ParentId }) + @($all | Where-Object { -not $_.ParentId }) | ForEach-Object { [pscustomobject]@{ Name = "Sensitivity label: $($_.DisplayName)"; Id = "$($_.Guid)" } })
     }
     catch { Add-Result 'Purview' 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'https://purview.microsoft.com/informationprotection/labels' '' }
-    Remove-Items 'Purview' 'ALSO sensitivity labels' $lab { param($x) $x.Name } { param($x) Remove-Label -Identity $x.Id -Confirm:$false -ErrorAction Stop } 'https://purview.microsoft.com/informationprotection/labels' 'Only labels marked as deployed by the ALSO toolkit are listed. Files already labelled keep their label text but lose label based protection. Sub-labels are listed before their parent labels.'
+    Remove-Items 'Purview' 'ALSO sensitivity labels' $lab { param($x) $x.Name } { param($x) Remove-Label -Identity $x.Id -Confirm:$false -WarningAction SilentlyContinue -ErrorAction Stop } 'https://purview.microsoft.com/informationprotection/labels' 'Only labels marked as deployed by the ALSO toolkit are listed. Files already labelled keep their label text but lose label based protection. Sub-labels are listed before their parent labels.'
 
     Set-Group 'Retention policy'
     $ret = @()
@@ -2420,8 +2420,8 @@ function Step-WipePurview {
     catch { Add-Result 'Purview' 'Retention policy' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'https://purview.microsoft.com/datalifecyclemanagement/policies' '' }
     Remove-Items 'Purview' 'ALSO retention policy' $ret { param($x) $x.Name } {
         param($x)
-        foreach ($r in @(Get-RetentionComplianceRule -Policy $x.Id -ErrorAction SilentlyContinue)) { Remove-RetentionComplianceRule -Identity $r.Name -Confirm:$false -ErrorAction Stop }
-        Remove-RetentionCompliancePolicy -Identity $x.Id -Confirm:$false -ErrorAction Stop
+        foreach ($r in @(Get-RetentionComplianceRule -Policy $x.Id -ErrorAction SilentlyContinue)) { Remove-RetentionComplianceRule -Identity $r.Name -Confirm:$false -WarningAction SilentlyContinue -ErrorAction Stop }
+        Remove-RetentionCompliancePolicy -Identity $x.Id -Confirm:$false -WarningAction SilentlyContinue -ErrorAction Stop
     } 'https://purview.microsoft.com/datalifecyclemanagement/policies' 'A retention policy with preservation lock cannot be removed by anyone.'
 }
 
