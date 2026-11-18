@@ -65,7 +65,7 @@ table.set td:first-child{font-weight:600;width:42%}
     <tr><td>Self-service purchase and trials of Microsoft 365 Copilot</td><td>Turned off, so users cannot buy or start trials themselves</td></tr>
     <tr><td>Third-party Teams apps</td><td>Blocked by default in the org-wide Teams app permission policy</td></tr>
     <tr><td>Personally owned devices</td><td>Blocked from enrolling in Intune (default enrollment restriction)</td></tr>
-    <tr><td>Default agent identity inactivity policy</td><td>Enabled (notify at 60 days, disable at 90, delete at 455)</td></tr>
+    <tr><td>Default agent identity inactivity policy</td><td>Enabled (notify at 60 days, disable at 90, delete at 455). Switched on automatically in Enforce mode</td></tr>
     <tr><td>Low-impact permissions list</td><td>profile, openid, offline_access, User.Read, email (Microsoft Graph)</td></tr>
     <tr><td>Admin consent request workflow</td><td>Enabled, with reviewers you choose (the account running the script, another account, or both), requests valid for 30 days</td></tr>
   </table>
@@ -120,7 +120,7 @@ table.set td:first-child{font-weight:600;width:42%}
     <tr><td>Break-glass group</td><td>Added as an exclusion to every Conditional Access policy</td></tr>
     <tr><td>ALSO Conditional Access groups</td><td>Placed inside the restricted management administrative unit</td></tr>
     <tr><td>Authentication context &quot;ALSO-Tier0 Admins&quot;</td><td>Imported when missing (Entra ID P2 tenants only; skipped on Entra ID P1 and Free)</td></tr>
-    <tr><td>Privileged Entra and Azure roles</td><td>Require the Tier 0 authentication context when the role is activated in Privileged Identity Management, for example Global Administrator, Privileged Role Administrator, Security Administrator, and the Azure roles Owner, User Access Administrator and Contributor (Entra ID P2 tenants only)</td></tr>
+    <tr><td>Privileged Entra and Azure roles</td><td>Require the Tier 0 authentication context when the role is activated in Privileged Identity Management, for example Global Administrator, Privileged Role Administrator, Security Administrator, and the Azure roles Owner, User Access Administrator and Contributor (Entra ID P2 tenants only). The script lists every role first, so you know what you approve. Azure roles need a separate Azure sign-in, which is only asked for when you confirm the tenant has Azure subscriptions</td></tr>
   </table>
 
   <h2 id="intune"><span>10.</span> Intune policy baseline</h2>
