@@ -1563,7 +1563,8 @@ function Get-ArmToken([string]$TenantId) {
     finally { $l.Stop(); $l.Close() }
 }
 
-function Set-PimAuthContext {    $doc = $GuideBase + '#admin-role-review'
+function Set-PimAuthContext {
+    $doc = $GuideBase + '#admin-role-review'
     $docText = 'ALSO guide: Review administrator roles (Identity and access, step 4)'
     $link = 'https://entra.microsoft.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles/resourceId//resourceType/tenant/provider/aadroles'
     $why = 'When an admin activates a privileged role in Privileged Identity Management, the activation must satisfy the ALSO "Tier 0 Admins" authentication context. The Conditional Access policy tied to that context then requires phishing-resistant MFA (passkey / FIDO2, Windows Hello) on every activation. PIM cannot ask for plain MFA and an authentication context at the same time, so the plain MFA requirement is replaced by the context.'
@@ -1598,6 +1599,10 @@ function Set-PimAuthContext {    $doc = $GuideBase + '#admin-role-review'
         'User Administrator' = 'fe930be7-5e62-47db-91af-98c3a49a38b1'
         'Authentication Administrator' = 'c4e39bd9-1100-46d3-8c65-fb160da0071f'
     }
+    Write-Host ''
+    Write-Host "   The authentication context 'ALSO-Tier0 Admins' will be required when someone activates one of these $($roles.Count) Entra roles in Privileged Identity Management:" -ForegroundColor Cyan
+    Write-Host ("     " + (@($roles.Keys) -join ', ')) -ForegroundColor Gray
+    Write-Host '   For each role the plain MFA requirement on activation is replaced by the context. Nothing else in the role settings changes, and nobody is blocked until you switch on the Conditional Access policy for the context.' -ForegroundColor Gray
     foreach ($rn in $roles.Keys) {
         $rid = $roles[$rn]; $nm = "Entra role '$rn': authentication context required on activation"
         Invoke-Part 'PrivilegedAccess' $nm {
@@ -1620,6 +1625,8 @@ function Set-PimAuthContext {    $doc = $GuideBase + '#admin-role-review'
     $azLink = 'https://portal.azure.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles'
     $azWhy = $why + ' This is set for the high-privileged Azure roles Owner, User Access Administrator and Contributor on every subscription you can manage.'
     $azRoles = [ordered]@{ 'Owner' = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'; 'User Access Administrator' = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'; 'Contributor' = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
+    Write-Host ''
+    Write-Host "   The same context will be required for these Azure roles on every subscription you can manage: $(@($azRoles.Keys) -join ', ')." -ForegroundColor Cyan
     $azManual = 'In the Azure portal open Privileged Identity Management > Azure resources > your subscription > Roles > the role > Role settings > Edit and, under Activation, choose "On activation, require Microsoft Entra Conditional Access authentication context" and select ALSO-Tier0 Admins.'
     try {
         Write-Host ''
