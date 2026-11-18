@@ -923,6 +923,21 @@ function Step-IntuneEnrollment {
         Graph PATCH "$base/$($pol.id)" @{ appliesTo = $want }
         if ($PilotGroupId) { Graph POST "$base/$($pol.id)/includedGroups/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/beta/groups/$PilotGroupId" } | Out-Null }
     } $link
+    Invoke-Part 'IntuneEnrollment' 'Personally owned devices' {
+        $ecUri = 'https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations'
+        $def = @(Get-AllPages $ecUri | Where-Object { "$($_.'@odata.type')" -match 'platformRestrictionsConfiguration$' -and "$($_.id)" -match 'DefaultPlatformRestrictions' }) | Select-Object -First 1
+        $rLink = 'https://intune.microsoft.com/#view/Microsoft_Intune_Enrollment/EnrollmentRestrictionsMenuBlade/~/platformRestrictions'
+        if (-not $def) { Add-Result 'IntuneEnrollment' 'Personally owned devices blocked from enrolling' 'Default restriction not found' 'Blocked' Manual $rLink 'In Intune open Devices > Enrollment > Enrollment restrictions > Device type restrictions and block personally owned devices.'; return }
+        $props = 'windowsRestriction', 'windowsHomeSkuRestriction', 'iosRestriction', 'androidRestriction', 'androidForWorkRestriction', 'macOSRestriction', 'macOSRestriction'
+        $open = @($props | Select-Object -Unique | Where-Object { $r = $def[$_]; $r -and $r['platformBlocked'] -ne $true -and $r['personalDeviceEnrollmentBlocked'] -ne $true })
+        $now = if ($open.Count) { 'Personally owned devices can enroll' } else { 'Personally owned devices are blocked' }
+        $why = 'Personally owned devices are not managed or trusted by your organization. Blocking them from enrolling means only company devices are enrolled and get your policies. Users can still use apps through app protection policies.'
+        Compare-Setting 'IntuneEnrollment' 'Personally owned devices blocked from enrolling (default restriction)' $now 'Personally owned devices are blocked' {
+            $body = @{ '@odata.type' = "$($def.'@odata.type')" }
+            foreach ($p in $open) { $r = [ordered]@{}; $src = $def[$p]; foreach ($kk in @($src.Keys)) { $r[$kk] = $src[$kk] }; $r['personalDeviceEnrollmentBlocked'] = $true; $body[$p] = $r }
+            Graph PATCH "$ecUri/$($def.id)" $body | Out-Null
+        } $rLink $why
+    }
 }
 
 function Set-DeviceRegPolicy([scriptblock]$Edit) {
