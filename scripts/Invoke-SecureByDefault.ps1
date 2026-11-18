@@ -647,7 +647,8 @@ function Step-Consent {
     Add-Result 'UserSettings' 'Agents and plugins user access (Microsoft 365 admin center)' 'Cannot be read or set automatically (Microsoft offers no API for it)' 'No users' Manual 'https://admin.microsoft.com/#/agents/settings' 'Open Agents > Settings > User access and choose "No users" until your organization has decided who may use agents and plugins. Then switch to "Specific users or groups" for a pilot group.' 'https://learn.microsoft.com/en-us/microsoft-agent-365/admin/agent-settings'
     Invoke-Part 'UserSettings' 'Agent identity inactivity policy' {
         $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
-        $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
+        try { $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1 }
+        catch { Add-Result 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' 'Cannot be read (Microsoft denied access; the tenant may lack Lifecycle Workflows or the permission was not granted)' 'Enabled' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' 'Open ID Governance > Lifecycle workflows > Lifecycle policies and turn on the Default Agent Identity Inactivity Lifecycle Policy. If the page is missing, the tenant has no Lifecycle Workflows yet.' 'https://learn.microsoft.com/en-us/entra/id-governance/agent-default-inactivity-policy'; return }
         if (-not $pol) { Add-Result 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' 'Policy not found in this tenant' 'Enabled' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' 'Turn it on under ID Governance > Lifecycle workflows > Lifecycle policies > Agent ID.' 'https://learn.microsoft.com/en-us/entra/id-governance/agent-default-inactivity-policy'; return }
         $agWhy = 'Agent identities that nobody uses anymore keep their access and become easy targets. The default policy notifies owners and sponsors after 60 days of inactivity, disables the agent after 90 days and deletes it after 455 days. It needs no extra license.'
         $agNow = if ($pol.isEnabled -eq $true) { 'Enabled' } else { 'Disabled' }
@@ -1855,7 +1856,7 @@ function Step-Purview {
 
         $g8 = 'ALSO baseline (suggested): Retention (optional)'; $g8x = 'Your existing tenant: Retention policies'
         try {
-            Write-Host '   ...reading retention policies' -ForegroundColor DarkGray; $ret = @(Invoke-Timed 'Get-RetentionCompliancePolicy -ErrorAction Stop')
+            Write-Host '   ...reading retention policies' -ForegroundColor DarkGray; $ret = @(Invoke-Timed 'Get-RetentionCompliancePolicy -ErrorAction Stop' 40)
             $c = $config.Retention
             $p = $ret | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             if ($p) {
