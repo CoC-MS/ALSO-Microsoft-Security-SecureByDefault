@@ -2306,11 +2306,10 @@ function Step-WipeConditionalAccess {
     $dir = Get-GuidePackage 'conditional-access'
     $pkg = @(Get-PackageJson $dir 'ConditionalAccess')
     $names = @($pkg | ForEach-Object { $_.Json.displayName })
-    $wantFp = @($pkg | ForEach-Object { Get-CaFingerprint $_.Json $false })
     Set-Group 'ALSO Conditional Access policies'
     $live = @(Get-AllPages $caBase)
     Write-Host "   ...read $($live.Count) Conditional Access policies from the tenant and $($names.Count) ALSO policy definitions" -ForegroundColor DarkGray
-    $pol = @($live | Where-Object { $_.displayName -in $names -or (Get-CaFingerprint $_ $false) -in $wantFp } | ForEach-Object { [pscustomobject]@{ Name = "$($_.displayName) (currently $($stateTxt["$($_.state)"]))"; Uri = "$caBase/$($_.id)" } })
+    $pol = @($live | Where-Object { $_.displayName -in $names } | ForEach-Object { [pscustomobject]@{ Name = "$($_.displayName) (currently $($stateTxt["$($_.state)"]))"; Uri = "$caBase/$($_.id)" } })
     Remove-Items 'ConditionalAccess' 'ALSO Conditional Access policies' $pol { param($x) $x.Name } { param($x) Graph DELETE $x.Uri | Out-Null } $link 'Policies that are switched on stop protecting users as soon as they are removed. Only policies with the exact ALSO names are listed; your own policies are never touched.'
 
     Set-Group 'Authentication contexts'
