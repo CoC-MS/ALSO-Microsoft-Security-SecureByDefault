@@ -25,9 +25,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet('Discover', 'Enforce', 'Wipe')][string]$Mode = 'Discover',
-    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'Copilot', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'Copilot', 'TeamsApps', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual')]
-    [string[]]$Steps = @('Licensing', 'SecurityDefaults', 'UserSettings', 'Consent', 'Copilot', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+    [string[]]$Steps = @('Licensing', 'SecurityDefaults', 'UserSettings', 'Consent', 'Copilot', 'TeamsApps', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'AuditLog', 'Purview', 'GuideManual'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
@@ -984,6 +984,32 @@ function Step-Copilot {
         } $link $why $doc
     }
     catch { Add-Result 'Copilot' 'Users can buy or start trials of Microsoft 365 Copilot themselves' "Could not be read or set: $($_.Exception.Message)" 'No' Manual $link "Turn it off in the Microsoft 365 admin center: Settings > Org settings > Self-service trials and purchases > Microsoft 365 Copilot > Do not allow. $why" $doc }
+}
+
+function Step-TeamsApps {
+    Write-Step 'Microsoft Teams third-party apps' 'Block third-party apps in Teams by default.'
+    $link = 'https://admin.teams.microsoft.com/policies/manage-apps'
+    $doc = 'https://learn.microsoft.com/en-us/microsoftteams/teams-app-permission-policies'
+    $why = 'Third-party Teams apps can read chat and channel content and act on behalf of users. Blocking them by default means an admin has to approve each app first. Microsoft apps and your own custom apps are not affected.'
+    $name = 'Third-party apps in Teams (default app permission policy)'
+    $manual = 'Open Teams admin center > Teams apps > Permission policies > Global (Org-wide default) and set Third-party apps to "Block specific apps and allow all others" with every app blocked, or to "Allow specific apps and block all others" with an empty list.'
+    try {
+        Initialize-Module MicrosoftTeams
+        if (-not $script:TeamsConnected) {
+            Write-Host '   Signing in to Microsoft Teams (a browser window opens; sign in as a Global Administrator)...' -ForegroundColor Cyan
+            Connect-MicrosoftTeams | Out-Null; $script:TeamsConnected = $true
+        }
+        $pol = Get-CsTeamsAppPermissionPolicy -Identity Global -ErrorAction Stop
+        $type = "$($pol.GlobalCatalogAppsType)"; $apps = @($pol.GlobalCatalogApps)
+        $blocked = ($type -eq 'AllowedAppList' -and $apps.Count -eq 0)
+        $cur = if ($blocked) { 'Blocked: no third-party apps allowed' } elseif ($type -eq 'AllowedAppList') { "Only $($apps.Count) approved third-party app(s) allowed" } elseif ($type -eq 'BlockedAppList') { 'Allowed (except ' + $apps.Count + ' blocked app(s))' } else { 'All third-party apps allowed' }
+        Compare-Setting 'TeamsApps' $name $cur 'Blocked: no third-party apps allowed' {
+            Set-CsTeamsAppPermissionPolicy -Identity Global -GlobalCatalogAppsType AllowedAppList -GlobalCatalogApps @() -ErrorAction Stop | Out-Null
+            $chk = Get-CsTeamsAppPermissionPolicy -Identity Global
+            if ("$($chk.GlobalCatalogAppsType)" -ne 'AllowedAppList' -or @($chk.GlobalCatalogApps).Count -gt 0) { throw 'Microsoft accepted the request but third-party apps are still allowed. Change it in the Teams admin center.' }
+        } $link $why $doc
+    }
+    catch { Add-Result 'TeamsApps' $name "Could not be read or set: $($_.Exception.Message)" 'Blocked: no third-party apps allowed' Manual $link "$manual $why" $doc }
 }
 
 function Step-Laps {
@@ -2313,7 +2339,7 @@ $cats = [ordered]@{
     SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
-    Copilot = 'Microsoft 365 Copilot'; MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
+    Copilot = 'Microsoft 365 Copilot'; TeamsApps = 'Collaboration: Microsoft Teams'; MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
     ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
     IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; AuditLog = 'Data: Microsoft Purview'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
 }
