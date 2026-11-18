@@ -1560,7 +1560,14 @@ function Step-IntunePolicies {
     $all = 'windows', 'macos', 'ios', 'android'
     $sel = $all
     if ($Mode -eq 'Enforce' -and -not $Force) {
-        $in = Read-Host '   Platforms to import: windows, macos, ios, android (comma separated, Enter = all)'
+        Write-Host '   Choose which device types get ALSO''s Intune policies. Only policies for the types you pick are created in Intune.' -ForegroundColor DarkGray
+        Write-Host '   - windows : Windows PCs (compliance, device security, Defender, Edge browser)' -ForegroundColor DarkGray
+        Write-Host '   - macos   : Macs' -ForegroundColor DarkGray
+        Write-Host '   - ios     : iPhones and iPads (compliance, app protection)' -ForegroundColor DarkGray
+        Write-Host '   - android : Android phones and tablets (compliance, app protection)' -ForegroundColor DarkGray
+        Write-Host '   Nothing is assigned to users or devices, so no one is affected until you assign a policy yourself. Existing policies are never changed.' -ForegroundColor DarkGray
+        Write-Host '   Example: type "windows, ios" to import only those two, or press Enter to import all four.' -ForegroundColor DarkGray
+        $in = Read-Host '   Device types to import (comma separated, Enter = all)'
         if ($in -and $in.Trim()) { $sel = @($in -split '[ ,;]+' | Where-Object { $_ } | ForEach-Object { $_.ToLower() }) }
     }
     Write-Host "   Platforms: $($sel -join ', ')" -ForegroundColor DarkGray
