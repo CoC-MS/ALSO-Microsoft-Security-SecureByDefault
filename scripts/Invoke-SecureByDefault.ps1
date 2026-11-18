@@ -216,7 +216,7 @@ $graphScopes = if ($Mode -eq 'Wipe') {
     'Policy.ReadWrite.ConditionalAccess', 'Policy.Read.All', 'Application.Read.All', 'Group.ReadWrite.All', 'User.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'Directory.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'Organization.Read.All', 'DeviceManagementConfiguration.ReadWrite.All',
     'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.ConsentRequest', 'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'Policy.ReadWrite.MobilityManagement', 'SharePointTenantSettings.ReadWrite.All',
-    'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All', 'LifecycleWorkflows.ReadWrite.All', 'RoleManagementPolicy.ReadWrite.Directory'
+    'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All', 'LifecyclePolicies-AgentId.ReadWrite.All', 'RoleManagementPolicy.ReadWrite.Directory'
 }
 elseif ($Mode -eq 'Enforce') {
     'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.AuthenticationMethod', 'Policy.ReadWrite.ConsentRequest',
@@ -224,12 +224,12 @@ elseif ($Mode -eq 'Enforce') {
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
     'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
     'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess',
-    'DeviceManagementApps.ReadWrite.All',     'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement', 'LifecycleWorkflows.ReadWrite.All', 'RoleManagementPolicy.ReadWrite.Directory'
+    'DeviceManagementApps.ReadWrite.All',     'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement', 'LifecyclePolicies-AgentId.ReadWrite.All', 'RoleManagementPolicy.ReadWrite.Directory'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
     'DeviceManagementServiceConfig.Read.All',     'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All',
-        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All',         'Application.Read.All', 'AccessReview.Read.All', 'LifecycleWorkflows.Read.All', 'RoleManagementPolicy.Read.Directory'
+        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All',         'Application.Read.All', 'AccessReview.Read.All', 'LifecyclePolicies-AgentId.Read.All', 'RoleManagementPolicy.Read.Directory'
     }
     Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
@@ -665,7 +665,7 @@ function Step-Consent {
     Invoke-Part 'UserSettings' 'Agent identity inactivity policy' {
         $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
         try { $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1 }
-        catch { Add-Result 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' 'Cannot be read (Microsoft denied access; the tenant may lack Lifecycle Workflows or the permission was not granted)' 'Enabled' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' 'Open ID Governance > Lifecycle workflows > Lifecycle policies and turn on the Default Agent Identity Inactivity Lifecycle Policy. If the page is missing, the tenant has no Lifecycle Workflows yet.' 'https://learn.microsoft.com/en-us/entra/id-governance/agent-default-inactivity-policy'; return }
+        catch { Add-Result 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' 'Cannot be read (Microsoft denied access; the LifecyclePolicies-AgentId permission was not granted or the policy is not available yet)' 'Enabled' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' 'Open ID Governance > Lifecycle workflows > Lifecycle policies and turn on the Default Agent Identity Inactivity Lifecycle Policy. If the page is missing, the tenant has no Lifecycle Workflows yet.' 'https://learn.microsoft.com/en-us/entra/id-governance/agent-default-inactivity-policy'; return }
         if (-not $pol) { Add-Result 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' 'Policy not found in this tenant' 'Enabled' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' 'Turn it on under ID Governance > Lifecycle workflows > Lifecycle policies > Agent ID.' 'https://learn.microsoft.com/en-us/entra/id-governance/agent-default-inactivity-policy'; return }
         $agWhy = 'Agent identities that nobody uses anymore keep their access and become easy targets. The default policy notifies owners and sponsors after 60 days of inactivity, disables the agent after 90 days and deletes it after 455 days. It needs no extra license.'
         $agNow = if ($pol.isEnabled -eq $true) { 'Enabled' } else { 'Disabled' }
