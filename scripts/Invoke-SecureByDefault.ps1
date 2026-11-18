@@ -1846,8 +1846,9 @@ function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 900) {
         }
         if ($got) { $last = [DateTime]::UtcNow; $lastBeat = $last; continue }
         $quiet = ([DateTime]::UtcNow - $last).TotalSeconds
-        if ($quiet -ge $SilentLimitSec) {
-            Write-Host "   No progress for $([int]($SilentLimitSec / 60)) minutes - stopping the Purview script." -ForegroundColor Red
+        $limit = if ($lastLine -match 'priority|unmanaged live sub-label') { [Math]::Min($SilentLimitSec, 240) } else { $SilentLimitSec }
+        if ($quiet -ge $limit) {
+            Write-Host "   No progress for $([int]($limit / 60)) minutes - stopping the Purview script." -ForegroundColor Red
             try { & taskkill.exe /PID $p.Id /T /F | Out-Null } catch { try { $p.Kill() } catch { } }
             return [pscustomobject]@{ Code = -1; TimedOut = $true; LastLine = $lastLine }
         }
@@ -2339,13 +2340,15 @@ function Step-WipeAuthContexts {
     $ctxUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences'
     $ctx = @()
     foreach ($c in @(Get-PackageJson (Get-GuidePackage 'conditional-access') 'AuthenticationContext')) {
-        try { $have = Graph GET "$ctxUri/$($c.Json.id)"; if ($have.id) { $ctx += [pscustomobject]@{ Name = "Authentication context: $($have.displayName)"; Uri = "$ctxUri/$($have.id)" } } } catch { if ("$($_.Exception.Message)" -notmatch 'NotFound|404|does not exist') { Write-Host "   Could not read authentication context $($c.Json.id): $($_.Exception.Message)" -ForegroundColor Yellow } }
+        try { $have = Graph GET "$ctxUri/$($c.Json.id)"; if ($have.id) { $ctx += [pscustomobject]@{ Name = "Authentication context: $($have.displayName)"; Uri = "$ctxUri/$($have.id)"; Id = $have.id; DisplayName = $have.displayName; Description = $have.description } } } catch { if ("$($_.Exception.Message)" -notmatch 'NotFound|404|does not exist') { Write-Host "   Could not read authentication context $($c.Json.id): $($_.Exception.Message)" -ForegroundColor Yellow } }
     }
     Remove-Items 'ConditionalAccess' 'ALSO authentication contexts' $ctx { param($x) $x.Name } {
         param($x)
         try {
-            try { Graph PATCH $x.Uri @{ isAvailable = $false } | Out-Null } catch { }
-            Graph DELETE $x.Uri | Out-Null
+            $unpub = $null
+            try { Graph PATCH $x.Uri @{ id = $x.Id; displayName = $x.DisplayName; description = $x.Description; isAvailable = $false } | Out-Null } catch { $unpub = "$($_.Exception.Message)" }
+            try { Graph DELETE $x.Uri | Out-Null }
+            catch { if ($unpub -and "$($_.Exception.Message)" -match 'publish to apps|3003') { throw "Still published to apps and it could not be unpublished: $(($unpub -split '\{')[0].Trim())" } else { throw } }
         }
         catch {
             if ("$($_.Exception.Message)" -match 'referenced by one or more policies|3001') { throw 'Still in use: a Conditional Access policy or a privileged role setting (for example Azure roles in Privileged Identity Management, which Wipe leaves unchanged) still refers to it. Remove that reference in the portal, then run Wipe again.' }
