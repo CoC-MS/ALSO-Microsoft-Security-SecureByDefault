@@ -118,6 +118,7 @@ function Set-Group([string]$Name) { $script:Group = $Name }
 
 function Write-Step([string]$Title, [string]$Why) {
     $script:Group = $null
+    $script:ChangeNo = 0
     Write-Host "`n== $Title ==" -ForegroundColor Magenta
     Write-Host "   $Why" -ForegroundColor DarkGray
 }
@@ -2028,6 +2029,13 @@ function ConvertTo-Psd1($v) {
         $t = [IO.File]::ReadAllText($lf) -replace "`r`n", "`n"
         $t = $t.Replace('    $peek = @(Get-Label -ErrorAction SilentlyContinue', '    Write-Host "    ...checking label ''$displayStr'' (Microsoft answers slowly, this can take a minute)" -ForegroundColor DarkGray' + "`n" + '    $peek = @(Get-Label -ErrorAction SilentlyContinue')
         $t = $t.Replace('    foreach ($c in $cands) {' + "`n" + '        try {' + "`n" + '            Invoke-WithTransientRetry -Description ("Set-Label priority=', '    foreach ($c in $cands) {' + "`n" + '        Write-Host "    ...moving label ''$DisplayNameForLog'' to position $TargetPriority" -ForegroundColor DarkGray' + "`n" + '        try {' + "`n" + '            Invoke-WithTransientRetry -Description ("Set-Label priority=')
+        # Label ordering (Pass 3) is the step where Microsoft stalls; allow skipping it when the labels already exist.
+        $p3 = 'Write-Host "Setting label priority order..." -ForegroundColor Cyan'
+        $p4 = "`n# ---------------------------------------------------------------------------`n# Pass 4"
+        if (([regex]::Matches($t, [regex]::Escape($p3)).Count -eq 1) -and ([regex]::Matches($t, [regex]::Escape($p4)).Count -eq 1) -and $t.IndexOf($p3) -lt $t.IndexOf($p4)) {
+            $t = $t.Replace($p3, 'if ($env:SBD_SKIP_LABEL_ORDER -eq ''1'') { Write-Host "Label order: existing labels found, order left as-is (check it in the Purview portal)." -ForegroundColor DarkGray } else {' + "`n" + $p3)
+            $t = $t.Replace($p4, "`n}" + $p4)
+        }
         [IO.File]::WriteAllText($lf, $t, (New-Object Text.UTF8Encoding($true)))
     }
     $dir
@@ -2109,7 +2117,7 @@ function Step-Purview {
         $labels = @()
         Write-Host '   ...reading sensitivity labels' -ForegroundColor DarkGray; try { $labels = @(Invoke-Timed 'Get-Label -ErrorAction Stop') } catch { & $addRow $g2 'Sensitivity labels' "Could not be read: $($_.Exception.Message)" 'Readable' Error 'Make sure the signed-in account is Global Administrator or Compliance Administrator.' $lbl $false }
         $find = { param($c, $parent)
-            $labels | Where-Object { ($_.Name -eq $c.Name -or $_.DisplayName -eq $c.DisplayName) -and $(if ($parent) { "$($_.ParentId)" -eq "$($parent.Guid)" } else { -not $_.ParentId }) } | Select-Object -First 1 }
+            $labels | Where-Object { ($_.Name -eq $c.Name -or $_.DisplayName -eq $c.DisplayName -or ($c.BuiltInName -and ($_.Name -eq "$($c.BuiltInName)" -or $_.Name -eq "$($c.BuiltInName)Group"))) -and $(if ($parent) { "$($_.ParentId)" -eq "$($parent.Guid)" } else { -not $_.ParentId }) } | Select-Object -First 1 }
         $resolved = @{}
         $baseNames = @()
         if ($labels.Count -or $true) {
@@ -2300,12 +2308,8 @@ function Step-Purview {
         }
     }
     $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
-    $lblRows = @($first | Where-Object { $_.Setting -match '^(Label|Sub-label): ' -and $_.Expected -eq 'Matches the ALSO baseline' })
-    if ($Mode -eq 'Enforce' -and $lblRows.Count -and -not @($lblRows | Where-Object { $_.Current -eq 'Missing' }).Count -and @($todo | Where-Object { $_.Group -match 'Sensitivity labels|Label policy' }).Count) {
-        $todo = @($todo | Where-Object { $_.Group -notmatch 'Sensitivity labels|Label policy' })
-        Add-Result 'Purview' 'Sensitivity labels step skipped' 'All baseline labels and sub-labels already exist' 'Labels exist' Info 'https://purview.microsoft.com/informationprotection/labels' 'Your tenant already has every baseline label and sub-label, so the label step (create labels, set their order, publish the label policy) is skipped. That step is the slowest part of Purview because Microsoft answers slowly there. Check the label order and the label policy in the Purview portal if anything differs from the baseline.' $doc $docText
-        Write-Host '   All sensitivity labels and sub-labels already exist - skipping the label step and continuing with the other Purview parts.' -ForegroundColor Cyan
-    }
+    $topRows = @($first | Where-Object { $_.Setting -match '^Label: ' -and $_.Expected -eq 'Matches the ALSO baseline' })
+    $skipOrder = $topRows.Count -gt 0 -and -not @($topRows | Where-Object { $_.Current -eq 'Missing' }).Count
     $final = $first
     $deployed = $false
     $retRow = @($first | Where-Object { $_.Setting -like 'Optional: BP-ALSO*' -and $_.Status -eq 'Info' })
@@ -2343,9 +2347,14 @@ function Step-Purview {
                 if ($adopt) { $dArgs += '-AdoptExisting' }
                 if ($tier -ne 'Full') { $dArgs += '-BPOnly' }
                 Write-Host '   Deploying your Purview selection. You may be asked to sign in to Exchange, Purview and SharePoint, and label changes can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
+                $orderSkipped = $skipOrder -and ($dArgs -notcontains '-SkipLabels')
+                if ($orderSkipped) {
+                    $env:SBD_SKIP_LABEL_ORDER = '1'
+                    Add-Result 'Purview' 'Sensitivity label order' 'Left as-is (labels already existed)' 'Labels in ALSO order' Manual 'https://purview.microsoft.com/informationprotection/labels' 'Your tenant already had the baseline labels, so the script did not reorder them. Reordering is the slowest Purview step because Microsoft answers very slowly there. In the Purview portal (Information protection > Sensitivity labels) check that the order is Public, General, Confidential, Highly Confidential, with each sub-label directly under its parent.' $doc $docText
+                }
                 try {
                     $res = Invoke-PvChild $dArgs 900
-                    if ($res.TimedOut -and ($dArgs -notcontains '-SkipLabels') -and ($res.LastLine -match 'label|priority')) {
+                    if ($res.TimedOut -and -not $orderSkipped -and ($dArgs -notcontains '-SkipLabels') -and ($res.LastLine -match 'label|priority')) {
                         Add-Result 'Purview' 'Sensitivity label order' 'Microsoft did not answer while the label order was being set' 'Labels in ALSO order' Manual $repo 'The labels themselves were created or found. Setting their order stalled on the Microsoft side. The script continues with the other Purview parts now. In the Purview portal (Information protection > Labels) check the label order, or run the script again later.' $doc $docText
                         Write-Host '   Continuing with the remaining Purview parts (without the label step)...' -ForegroundColor Cyan
                         $res = Invoke-PvChild ($dArgs + '-SkipLabels') 900
@@ -2354,7 +2363,7 @@ function Step-Purview {
                     elseif ($res.Code -ne 0) { Add-Result 'Purview' 'Deploying the Purview baseline' "ALSO's Purview script stopped (exit code $($res.Code))" 'Deployed' Error $repo 'See the console output above for the reason. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText }
                 }
                 catch { Add-Result 'Purview' 'Deploying the Purview baseline' $_.Exception.Message 'Deployed' Error $repo 'ALSO''s Purview script could not be started or stopped with an error. Run the script again after fixing the cause.' $doc $docText }
-                finally { Remove-Item $cfgOut -Force -ErrorAction SilentlyContinue }
+                finally { Remove-Item $cfgOut -Force -ErrorAction SilentlyContinue; Remove-Item Env:\SBD_SKIP_LABEL_ORDER -ErrorAction SilentlyContinue }
                 $deployed = $true
                 Write-Host '   Reading the tenant again to verify the result...' -ForegroundColor Cyan
                 Clear-PvCache
