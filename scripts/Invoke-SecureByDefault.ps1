@@ -99,6 +99,9 @@ function Add-Result {
     if (-not $DocText) { $DocText = 'Microsoft Learn' }
     $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Group = $script:Group; Doc = $Doc; DocText = $DocText; Tenant = "$initialDomain" })
     $color = @{ Compliant = 'Green'; Fixed = 'Green'; Drift = 'Yellow'; Manual = 'Cyan'; Info = 'Gray'; Error = 'Red'; Skipped = 'DarkGray' }[$Status]
+    # Enforce mode only lists what needs attention; settings that are already compliant are counted and stay in the report.
+    if ($Mode -eq 'Enforce' -and $Status -eq 'Compliant') { $script:OkHidden++; return }
+    Show-PendingNote
     $msg = switch ($Status) {
         'Compliant' { "${Setting}: $Current" }
         'Fixed'     { "${Setting}: changed from '$Current' to '$Expected'" }
@@ -116,7 +119,23 @@ function Add-Result {
 
 function Set-Group([string]$Name) { $script:Group = $Name }
 
+function Show-OkHidden {
+    if ($script:OkHidden) { Write-Host "  [Compliant] $($script:OkHidden) setting(s) already compliant, not listed (see the report)." -ForegroundColor DarkGreen }
+    $script:OkHidden = 0; $script:PendingNote = $null
+}
+# Explanatory text that only matters when something follows it. In Enforce mode it is shown just before the first line that needs attention.
+function Write-Note([string[]]$Lines, [string]$Color = 'Gray') {
+    if ($Mode -ne 'Enforce') { Write-Host ''; foreach ($l in $Lines) { Write-Host $l -ForegroundColor $Color }; return }
+    $script:PendingNote = @{ Lines = $Lines; Color = $Color }
+}
+function Show-PendingNote {
+    if (-not $script:PendingNote) { return }
+    $n = $script:PendingNote; $script:PendingNote = $null
+    Write-Host ''; foreach ($l in $n.Lines) { Write-Host $l -ForegroundColor $n.Color }
+}
+
 function Write-Step([string]$Title, [string]$Why) {
+    Show-OkHidden
     $script:Group = $null
     $script:ChangeNo = 0
     Write-Host "`n== $Title ==" -ForegroundColor Magenta
@@ -124,6 +143,7 @@ function Write-Step([string]$Title, [string]$Why) {
 }
 
 function Confirm-Change([string]$Action, [switch]$Always) {
+    Show-PendingNote
     if ($Mode -ne 'Enforce') { return $false }
     if (-not $PSCmdlet.ShouldProcess($Action)) { return $false }
     if ($Force) { return $true }
@@ -1759,10 +1779,7 @@ function Set-PimAuthContext {
         'User Administrator' = 'fe930be7-5e62-47db-91af-98c3a49a38b1'
         'Authentication Administrator' = 'c4e39bd9-1100-46d3-8c65-fb160da0071f'
     }
-    Write-Host ''
-    Write-Host "   The authentication context 'ALSO-Tier0 Admins' will be required when someone activates one of these $($roles.Count) Entra roles in Privileged Identity Management:" -ForegroundColor Cyan
-    Write-Host ("     " + (@($roles.Keys) -join ', ')) -ForegroundColor Gray
-    Write-Host '   For each role the plain MFA requirement on activation is replaced by the context. Nothing else in the role settings changes, and nobody is blocked until you switch on the Conditional Access policy for the context.' -ForegroundColor Gray
+    Write-Note @("   The authentication context 'ALSO-Tier0 Admins' will be required when someone activates one of these $($roles.Count) Entra roles in Privileged Identity Management:", ("     " + (@($roles.Keys) -join ', ')), '   For each role the plain MFA requirement on activation is replaced by the context. Nothing else in the role settings changes, and nobody is blocked until you switch on the Conditional Access policy for the context.')
     foreach ($rn in $roles.Keys) {
         $rid = $roles[$rn]; $nm = "Entra role '$rn': authentication context required on activation"
         Invoke-Part 'PrivilegedAccess' $nm {
@@ -1785,8 +1802,7 @@ function Set-PimAuthContext {
     $azLink = 'https://portal.azure.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles'
     $azWhy = $why + ' This is set for the high-privileged Azure roles Owner, User Access Administrator and Contributor on every subscription you can manage.'
     $azRoles = [ordered]@{ 'Owner' = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'; 'User Access Administrator' = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'; 'Contributor' = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
-    Write-Host ''
-    Write-Host "   The same context will be required for these Azure roles on every subscription you can manage: $(@($azRoles.Keys) -join ', ')." -ForegroundColor Cyan
+    Write-Note @("   The same context will be required for these Azure roles on every subscription you can manage: $(@($azRoles.Keys) -join ', ').") 'Cyan'
     $azManual = 'In the Azure portal open Privileged Identity Management > Azure resources > your subscription > Roles > the role > Role settings > Edit and, under Activation, choose "On activation, require Microsoft Entra Conditional Access authentication context" and select ALSO-Tier0 Admins.'
     try {
         Write-Host ''
@@ -2988,6 +3004,7 @@ foreach ($s in $Steps) {
     Invoke-Safe $s { & "Step-$s" }
 }
 
+Show-OkHidden
 #region report
 New-Item -ItemType Directory -Force $OutputPath | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
