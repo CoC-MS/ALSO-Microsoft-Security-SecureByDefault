@@ -132,9 +132,13 @@ function Compare-Setting {
 $script:IppsTok = $null; $script:IppsWorker = $null
 function Wait-Worker($ps, [int]$Seconds, [string]$What) {
     $ar = $ps.BeginInvoke()
-    if (-not $ar.AsyncWaitHandle.WaitOne($Seconds * 1000)) {
-        try { [void]$ps.BeginStop($null, $null) } catch {}
-        throw "$What did not answer within $Seconds seconds and was skipped"
+    $sw = [Diagnostics.Stopwatch]::StartNew(); $next = 15
+    while (-not $ar.AsyncWaitHandle.WaitOne(1000)) {
+        if ($sw.Elapsed.TotalSeconds -ge $Seconds) {
+            try { [void]$ps.BeginStop($null, $null) } catch {}
+            throw "$What did not answer within $Seconds seconds and was skipped"
+        }
+        if ($sw.Elapsed.TotalSeconds -ge $next) { Write-Host ("   ...waiting for {0} ({1}s of {2}s)" -f $What, [int]$sw.Elapsed.TotalSeconds, $Seconds) -ForegroundColor DarkGray; $next += 15 }
     }
     $out = @($ps.EndInvoke($ar))
     if ($ps.Streams.Error.Count) { throw $ps.Streams.Error[0].Exception.Message }
