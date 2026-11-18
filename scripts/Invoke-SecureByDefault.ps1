@@ -326,6 +326,13 @@ try {
 }
 catch { throw "Microsoft Graph sign-in failed: $($_.Exception.Message)" }
 Write-Host '  Signed in to Microsoft Graph.' -ForegroundColor Green
+try {
+    $pl = $token.Split('.')[1].Replace('-', '+').Replace('_', '/'); while ($pl.Length % 4) { $pl += '=' }
+    $granted = @(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pl)) | ConvertFrom-Json).scp -split ' ')
+    $missingScopes = @($graphScopes | Where-Object { $_ -notin $granted })
+    if ($missingScopes.Count) { Write-Host "  WARNING: Microsoft did not grant these permissions, so the related settings cannot be read or changed: $($missingScopes -join ', '). Run the script again and approve the consent request for the whole organization." -ForegroundColor Yellow }
+}
+catch { }
 $gaRole = '62e90394-69f5-4237-9190-012177145e10'
 $myRoles = (Graph GET 'https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId').value.roleTemplateId
 if ($gaRole -notin $myRoles) {
@@ -2461,30 +2468,30 @@ function Step-WipeTenantSettings {
         $wUri = 'https://graph.microsoft.com/v1.0/policies/adminConsentRequestPolicy'
         if ((Graph GET $wUri).isEnabled -eq $true) { & $add 'Consent' 'Admin consent request workflow: from enabled to disabled' { Graph PUT $wUri @{ isEnabled = $false; notifyReviewers = $false; remindersEnabled = $false; requestDurationInDays = 30; reviewers = @() } | Out-Null } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $sp = 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings'; $t = Graph GET $sp
         if ("$($t.sharingCapability)" -in 'disabled', 'existingExternalUserSharingOnly', 'externalUserSharingOnly') { & $add 'Sharepoint' "SharePoint and OneDrive external sharing: from $($t.sharingCapability) to externalUserAndGuestSharing (Anyone, Microsoft default)" { Graph PATCH $sp @{ sharingCapability = 'externalUserAndGuestSharing' } | Out-Null } }
         if ($t.isResharingByExternalUsersEnabled -eq $false) { & $add 'Sharepoint' 'Guests can share items they do not own: from No to Yes' { Graph PATCH $sp @{ isResharingByExternalUsersEnabled = $true } | Out-Null } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $mdm = 'https://graph.microsoft.com/beta/policies/mobileDeviceManagementPolicies'
         $pol = (Graph GET $mdm).value | Where-Object { $_.displayName -match 'Intune' } | Select-Object -First 1
         if ($pol -and "$($pol.appliesTo)" -ne 'none') { & $add 'IntuneEnrollment' 'Automatic Intune enrollment (MDM user scope): back to None' { Graph PATCH "$mdm/$($pol.id)" @{ appliesTo = 'none' } | Out-Null } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $dr = Graph GET 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
         if ($dr.localAdminPassword.isEnabled -eq $true) { & $add 'Laps' 'Entra LAPS: from enabled to disabled' { Set-DeviceRegPolicy { param($x) $x.localAdminPassword.isEnabled = $false } } }
         if ($dr.azureADJoin.localAdmins.enableGlobalAdmins -eq $false) { & $add 'Laps' 'Global administrators become local admin on joined devices: from No to Yes (Microsoft default)' { Set-DeviceRegPolicy { param($x) $x.azureADJoin.localAdmins.enableGlobalAdmins = $true } } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $dr2 = Graph GET 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
         if ("$($dr2.azureADJoin.localAdmins.registeringUsers.'@odata.type')" -eq '#microsoft.graph.noDeviceRegistrationMembership') { & $add 'Laps' 'Registering user is added as local administrator on join: from None to All registering users (Microsoft default)' { Set-DeviceRegPolicy { param($x) $x.azureADJoin.localAdmins.registeringUsers = @{ '@odata.type' = '#microsoft.graph.allDeviceRegistrationMembership' } } } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $ecUri = 'https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations'
         $def = @(Get-AllPages $ecUri | Where-Object { "$($_.'@odata.type')" -match 'platformRestrictionsConfiguration$' -and "$($_.id)" -match 'DefaultPlatformRestrictions' }) | Select-Object -First 1
@@ -2499,20 +2506,20 @@ function Step-WipeTenantSettings {
             }
         }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $gSp = @(Get-AllPages 'https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq ''00000003-0000-0000-c000-000000000000''&$select=id') | Select-Object -First 1
         $clsUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($gSp.id)/delegatedPermissionClassifications"
         $lowNow = @(Get-AllPages $clsUri | Where-Object { $_.classification -eq 'low' -and "$($_.permissionName)" -in 'profile', 'openid', 'offline_access', 'User.Read', 'email' })
         if ($lowNow.Count) { & $add 'Consent' "Low-impact permissions list (profile, openid, offline_access, User.Read, email): remove the $($lowNow.Count) entries on the list (Microsoft default is an empty list)" { foreach ($c in $lowNow) { Graph DELETE "$clsUri/$($c.id)" | Out-Null } } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     try {
         $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
         $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
         if ($pol -and $pol.isEnabled -eq $true) { & $add 'Consent' 'Default Agent Identity inactivity lifecycle policy: from enabled to disabled' { Graph PATCH "$lpUri/$($pol.id)" @{ '@odata.type' = "$($pol.'@odata.type')"; isEnabled = $false } | Out-Null } }
     }
-    catch { }
+    catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
     if ('Copilot' -in $Steps) {
         try {
             Initialize-Module MSCommerce
@@ -2551,7 +2558,8 @@ function Step-WipeTenantSettings {
             }
         }
         catch { Write-Host "   Entra role activation settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
-    }    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
+    }
+    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
 }
 function Invoke-Wipe {
     Write-Host ''
