@@ -56,9 +56,48 @@ $script:Reference = Get-Content (Join-Path $PSScriptRoot '..\config\reference-st
 $GuideBase = 'https://coc-ms.github.io/ALSO-Microsoft-Security-Fundamentals-and-Copilot-Readiness/'
 $BreakGlassPdf = $GuideBase + 'downloads/break-glass-account-best-practices.pdf'
 
+$LearnBase = 'https://learn.microsoft.com/en-us/'
+# Readiness-page sections mapped to the Microsoft Learn article used there (or the closest Learn article).
+$LearnDocs = @{
+    'SecurityDefaults|#identity-policies' = @('entra/fundamentals/security-defaults', 'Microsoft Learn: Security defaults in Microsoft Entra ID')
+    '#identity-policies'                  = @('entra/identity/conditional-access/plan-conditional-access', 'Microsoft Learn: Plan a Conditional Access deployment')
+    '#access-reviews'                     = @('entra/id-governance/privileged-identity-management/pim-create-roles-and-resource-roles-review', 'Microsoft Learn: Create an access review of Microsoft Entra roles')
+    '#admin-role-review'                  = @('entra/identity/role-based-access-control/best-practices', 'Microsoft Learn: Best practices for Microsoft Entra roles')
+    '#alerts'                             = @('defender-xdr/configure-email-notifications', 'Microsoft Learn: Configure incident email notifications')
+    '#app-governance'                     = @('defender-cloud-apps/app-governance-get-started', 'Microsoft Learn: Get started with app governance')
+    '#apple-enrollment'                   = @('intune/device-enrollment/apple/setup-automated-macos', 'Microsoft Learn: Automated Device Enrollment for Apple devices')
+    '#app-protection'                     = @('intune/app-management/protection/overview', 'Microsoft Learn: App protection policies overview')
+    '#authentication'                     = @('entra/identity/authentication/concept-authentication-methods-manage', 'Microsoft Learn: Manage authentication methods')
+    '#browser'                            = @('deployedge/configure-edge-with-intune', 'Microsoft Learn: Configure Microsoft Edge with Intune')
+    '#classification'                     = @('purview/sensitivity-labels', 'Microsoft Learn: Learn about sensitivity labels')
+    '#cloud-apps'                         = @('defender-cloud-apps/mde-integration', 'Microsoft Learn: Integrate Defender for Cloud Apps with Defender for Endpoint')
+    '#compliance'                         = @('intune/device-security/compliance/overview', 'Microsoft Learn: Device compliance policies in Intune')
+    '#copilot-adoption-guidance'          = @('copilot/adopt/enablement-resources', 'Microsoft Learn: Microsoft 365 Copilot adoption resources')
+    '#copilot-settings'                   = @('copilot/implement/configure-copilot-admin-center', 'Microsoft Learn: Configure Copilot settings in the Microsoft 365 admin center')
+    '#data-access-governance'             = @('sharepoint/data-access-governance-reports', 'Microsoft Learn: Data access governance reports for SharePoint sites')
+    '#defender-identity'                  = @('defender-for-identity/deploy/deploy-defender-identity', 'Microsoft Learn: Deploy Microsoft Defender for Identity')
+    '#defender-onboarding'                = @('intune/device-security/microsoft-defender/configure-integration', 'Microsoft Learn: Configure Defender for Endpoint in Intune')
+    '#device-registration'                = @('entra/identity/conditional-access/policy-all-users-device-registration', 'Microsoft Learn: Require MFA for device registration')
+    '#email-authentication'               = @('defender-office-365/email-authentication-about', 'Microsoft Learn: Email authentication (SPF, DKIM and DMARC)')
+    '#endpoint-baseline'                  = @('intune/device-configuration/endpoint-security/antivirus', 'Microsoft Learn: Antivirus policy for endpoint security in Intune')
+    '#local-admin'                        = @('intune/device-security/laps/overview', 'Microsoft Learn: Windows LAPS in Intune')
+    '#office-protection'                  = @('defender-office-365/preset-security-policies', 'Microsoft Learn: Preset security policies')
+    '#purview-baseline'                   = @('purview/information-protection', 'Microsoft Learn: Protect sensitive data with Microsoft Purview')
+    '#restricted-content-discovery'       = @('sharepoint/restricted-content-discovery', 'Microsoft Learn: Restrict discovery of SharePoint sites and content')
+    '#restricted-management-admin-units'  = @('entra/identity/role-based-access-control/admin-units-restricted-management', 'Microsoft Learn: Restricted management administrative units')
+    '#sspr'                               = @('entra/identity/authentication/tutorial-enable-sspr', 'Microsoft Learn: Enable self-service password reset')
+    ''                                    = @('intune/fundamentals/what-is-intune', 'Microsoft Learn: Microsoft Intune overview')
+}
+
 function Add-Result {
     param($Step, $Setting, $Current, $Expected, [ValidateSet('Compliant', 'Drift', 'Fixed', 'Manual', 'Info', 'Error', 'Skipped')]$Status, $Link, $Detail, $Doc, $DocText)
-    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Group = $script:Group; Doc = $Doc; DocText = $(if ($DocText) { $DocText } else { 'Read the ALSO guide' }) })
+    if ($Doc -and $Doc.StartsWith($GuideBase) -and $Doc -notmatch '\.pdf$') {
+        $anchor = $Doc.Substring($GuideBase.Length)
+        $m = if ($LearnDocs.ContainsKey("$Step|$anchor")) { $LearnDocs["$Step|$anchor"] } else { $LearnDocs[$anchor] }
+        if ($m) { $Doc = $LearnBase + $m[0]; $DocText = $m[1] } else { $DocText = 'Microsoft 365 security and Copilot readiness' }
+    }
+    if (-not $DocText) { $DocText = 'Microsoft Learn' }
+    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Group = $script:Group; Doc = $Doc; DocText = $DocText })
     $color = @{ Compliant = 'Green'; Fixed = 'Green'; Drift = 'Yellow'; Manual = 'Cyan'; Info = 'Gray'; Error = 'Red'; Skipped = 'DarkGray' }[$Status]
     $msg = switch ($Status) {
         'Compliant' { "${Setting}: $Current" }
@@ -611,19 +650,19 @@ function Step-SecurityDefaults {
     $uri = 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy'
     $sd = Graph GET $uri
     $ca = @((Graph GET 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$select=id,state').value | Where-Object { $_.state -ne 'disabled' })
-    $why = 'Security defaults gives every user baseline MFA but cannot be customised (no break-glass exclusions, no authentication strengths, no device or location rules). Conditional Access and security defaults cannot be used together. Recommended: deploy ALSO''s Conditional Access baseline (step 10, Identity and access, in the ALSO guide), then turn security defaults OFF. If no Conditional Access policies exist, keep security defaults ON so the tenant is never left without MFA.'
+    $why = 'Security defaults gives every user baseline MFA but cannot be customised (no break-glass exclusions, no authentication strengths, no device or location rules). Conditional Access and security defaults cannot be used together. Recommended: deploy a Conditional Access baseline (for example ALSO''s Conditional Access templates), then turn security defaults OFF. If no Conditional Access policies exist, keep security defaults ON so the tenant is never left without MFA.'
     if ($sd.isEnabled -eq $true) {
-        Add-Result 'SecurityDefaults' 'Security defaults' 'On' 'On until ALSO Conditional Access baseline is deployed, then Off' Manual $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
+        Add-Result 'SecurityDefaults' 'Security defaults' 'On' 'On until a Conditional Access baseline is deployed, then Off' Manual $link $why $doc 'Microsoft Learn'
     }
     elseif ($ca.Count -gt 0) {
-        Add-Result 'SecurityDefaults' 'Security defaults' "Off - $($ca.Count) Conditional Access policies in use" 'Off with Conditional Access in use' Compliant $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
+        Add-Result 'SecurityDefaults' 'Security defaults' "Off - $($ca.Count) Conditional Access policies in use" 'Off with Conditional Access in use' Compliant $link $why $doc 'Microsoft Learn'
     }
     else {
         Compare-Setting 'SecurityDefaults' 'Security defaults' 'Off (and no Conditional Access policies exist)' 'On until ALSO Conditional Access baseline is deployed' {
             Graph PATCH $uri @{ isEnabled = $true } | Out-Null
-            Write-Host '   Security defaults is now ON. When you deploy the ALSO Conditional Access baseline (step 10 in the ALSO guide), turn security defaults OFF again.' -ForegroundColor Yellow
+            Write-Host '   Security defaults is now ON. When you deploy your Conditional Access baseline, turn security defaults OFF again.' -ForegroundColor Yellow
             Write-Host "   Guide: $doc" -ForegroundColor DarkCyan
-        } $link $why $doc 'ALSO guide: Conditional Access baseline (step 10)'
+        } $link $why $doc 'Microsoft Learn'
     }
 }
 
@@ -951,7 +990,7 @@ function Step-Fido2 {
     $f = Graph GET $uri
     Compare-Setting 'Fido2' 'Passkey (FIDO2)' (Cap $f.state) 'Enabled' {
         Graph PATCH $uri @{ '@odata.type' = '#microsoft.graph.fido2AuthenticationMethodConfiguration'; state = 'enabled'; includeTargets = @(@{ targetType = 'group'; id = 'all_users'; isRegistrationRequired = $false }) }
-    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods' 'Passkeys (FIDO2 security keys) are phishing-resistant and the strongest sign-in method Entra offers. Allow them for all users so people and break-glass accounts can register a key.' ($GuideBase + '#authentication') 'ALSO guide: Allow strong authentication methods (Identity and access, step 6)'
+    } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods' 'Passkeys (FIDO2 security keys) are phishing-resistant and the strongest sign-in method Entra offers. Allow them for all users so people and break-glass accounts can register a key.' ($GuideBase + '#authentication') 'Microsoft Learn'
 }
 
 function Step-AuthMethods {
@@ -963,7 +1002,7 @@ function Step-AuthMethods {
         SoftwareOath = 'Third-party software OATH tokens'; Voice = 'Voice call'; Email = 'Email OTP'; X509Certificate = 'Certificate-based authentication'
         HardwareOath = 'Hardware OATH tokens'; VerifiableCredentials = 'Verified ID'; QRCodePin = 'QR code' }
     $authDoc = $GuideBase + '#authentication'
-    $authText = 'ALSO guide: Allow strong authentication methods (Identity and access, step 6)'
+    $authText = 'Microsoft Learn'
     $authWhy = 'Authentication methods decide how users prove who they are. Passwordless and phishing-resistant methods (passkeys, Authenticator, Temporary Access Pass) should be on; weak methods that can be intercepted (SMS, voice, email OTP) should be off. Methods marked Review depend on your organization. Read ALSO''s recommendations for the full reasoning.'
     $wanted = @{ Fido2 = 'enabled'; MicrosoftAuthenticator = 'enabled'; TemporaryAccessPass = 'enabled'; Sms = 'disabled'; Voice = 'disabled'; Email = 'disabled' }
     foreach ($m in $pol.authenticationMethodConfigurations) {
@@ -1111,12 +1150,12 @@ function Step-Laps {
     $uri = 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
     $dr = Graph GET $uri
     $lapsDoc = $GuideBase + '#local-admin'
-    $lapsText = 'ALSO guide: LAPS via policy templates (Endpoints, step 4)'
-    $lapsWhy = 'Entra LAPS lets devices store a unique, rotating local administrator password in Entra ID, so one stolen local password cannot be reused on other devices. This switch only allows the feature. To actually deploy it, create the Windows LAPS policy in Intune (Endpoint security > Account protection) using ALSO''s policy templates and test password recovery - see step 4 under Endpoint management and protection in the ALSO guide.'
+    $lapsText = 'Microsoft Learn'
+    $lapsWhy = 'Entra LAPS lets devices store a unique, rotating local administrator password in Entra ID, so one stolen local password cannot be reused on other devices. This switch only allows the feature. To actually deploy it, create the Windows LAPS policy in Intune (Endpoint security > Account protection) using ALSO''s policy templates and test password recovery.'
     Compare-Setting 'Laps' 'Enable Microsoft Entra Local Administrator Password Solution (LAPS)' (YN $dr.localAdminPassword.isEnabled) 'Yes' { Set-DeviceRegPolicy { param($d) if (-not $d.localAdminPassword) { $d.localAdminPassword = @{} }; $d.localAdminPassword.isEnabled = $true } } $link $lapsWhy $lapsDoc $lapsText
     $regDoc = $GuideBase + '#device-registration'
     $mfaCur = if ("$($dr.multiFactorAuthConfiguration)" -eq 'required') { 'Yes' } else { 'No' }
-    Compare-Setting 'Laps' 'Require multifactor authentication to register or join devices (legacy device setting)' $mfaCur 'No' { Set-DeviceRegPolicy { param($d) $d.multiFactorAuthConfiguration = 'notRequired' } } $link 'This old per-tenant switch is replaced by a Conditional Access policy (user action: Register or join devices) that requires MFA. The legacy switch and the Conditional Access policy conflict, so the reference state is No here and MFA is enforced through Conditional Access instead. Deploy that policy from ALSO''s templates - see step 1 under Endpoint management and protection in the ALSO guide.' $regDoc 'ALSO guide: MFA when registering devices (Endpoints, step 1)'
+    Compare-Setting 'Laps' 'Require multifactor authentication to register or join devices (legacy device setting)' $mfaCur 'No' { Set-DeviceRegPolicy { param($d) $d.multiFactorAuthConfiguration = 'notRequired' } } $link 'This old per-tenant switch is replaced by a Conditional Access policy (user action: Register or join devices) that requires MFA. The legacy switch and the Conditional Access policy conflict, so the reference state is No here and MFA is enforced through Conditional Access instead. Deploy that policy from ALSO''s Conditional Access templates.' $regDoc 'Microsoft Learn'
     Compare-Setting 'Laps' 'Global administrators become local admin on Entra-joined devices' (YN $dr.azureADJoin.localAdmins.enableGlobalAdmins) 'No' {
         Set-DeviceRegPolicy { param($d) $d.azureADJoin.localAdmins.enableGlobalAdmins = $false } } $link 'Global administrators should not automatically be local admins on every Entra-joined device. This limits the damage if a global admin account is compromised. Use LAPS for controlled local admin access instead.' $lapsDoc $lapsText
     $ru = @{ '#microsoft.graph.noDeviceRegistrationMembership' = 'None (registering user is not local admin)'
@@ -1145,7 +1184,7 @@ function Step-MdoPresets {
         }
     }
     if (-not $found) {
-        Add-Result 'MdoPresets' 'Standard preset security policy' 'Not configured' 'Standard preset turned on for all recipients' Manual $link 'Standard preset protection applies Microsoft''s recommended anti-spam, anti-phishing, Safe Links and Safe Attachments settings to all recipients in one step. Microsoft provides no API to create it, so turn it on once in the Defender portal. Then read ALSO''s recommendations for Defender for Office 365 and for SPF, DKIM and DMARC.' ($GuideBase + '#office-protection') 'ALSO guide: Defender for Office 365 protection (Email, apps and collaboration, step 1)'
+        Add-Result 'MdoPresets' 'Standard preset security policy' 'Not configured' 'Standard preset turned on for all recipients' Manual $link 'Standard preset protection applies Microsoft''s recommended anti-spam, anti-phishing, Safe Links and Safe Attachments settings to all recipients in one step. Microsoft provides no API to create it, so turn it on once in the Defender portal. Then review Microsoft''s guidance for preset security policies and for SPF, DKIM and DMARC.' ($GuideBase + '#office-protection') 'Microsoft Learn'
         Write-Host '   Microsoft does not allow creating the preset policies through any API or PowerShell cmdlet. Turn Standard protection on once in the Defender portal (Preset security policies > Standard protection > Manage). After that, this script can verify and enable/disable it.' -ForegroundColor DarkGray
     }
 }
@@ -1172,7 +1211,7 @@ function Get-DnsRecords([string]$Name, [string]$Type) {
 function Step-EmailAuth {
     Write-Step 'Email authentication (SPF, DKIM, DMARC)' 'Looks up the public DNS records of your domains. Recommendations only - nothing is changed.'
     $link = 'https://admin.cloud.microsoft/?#/Domains'
-    $doc = $GuideBase + '#email-authentication'; $docText = 'ALSO guide: SPF, DKIM and DMARC (Email, apps and collaboration, step 2)'
+    $doc = $GuideBase + '#email-authentication'; $docText = 'Microsoft Learn'
     $domains = @((Graph GET 'https://graph.microsoft.com/v1.0/domains').value | Where-Object { $_.isVerified -and $_.id -notlike '*.onmicrosoft.com' -and $_.supportedServices -contains 'Email' })
     if (-not $domains.Count) {
         Add-Result 'EmailAuth' 'Custom email domains' 'None found (only the onmicrosoft.com domain)' 'SPF, DKIM and DMARC set for each sending domain' Info $link 'No verified custom domain with email enabled was found, so there is nothing to scan. When you add a domain, publish SPF, DKIM and DMARC for it.' $doc $docText
@@ -1264,15 +1303,15 @@ function Step-DefenderEndpoint {
 function Step-DefenderGuidance {
     Write-Step 'Defender XDR guidance' 'Settings Microsoft offers only in the portal (no public API to read or set them).'
     $na = 'Cannot be read automatically (no Microsoft API)'
-    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications' 'Make sure the right people (security team or your partner) receive Defender incident emails so high-severity incidents are not missed. Also make sure alert policies notify a monitored mailbox.' ($GuideBase + '#alerts') 'ALSO guide: Make sure Defender alerts reach the right people (Email, apps and collaboration, step 3)'
+    Add-Result 'DefenderGuidance' 'Incident email notifications to the right people' $na 'Configured' Manual 'https://security.microsoft.com/securitysettings/defender/email_notifications' 'Make sure the right people (security team or your partner) receive Defender incident emails so high-severity incidents are not missed. Also make sure alert policies notify a monitored mailbox.' ($GuideBase + '#alerts') 'Microsoft Learn'
 
     $need = 'requires Microsoft 365 E5/E7, the Defender or Purview suite, or a standalone license'
     $hasMdi = ((Get-LicenseTier).Tier -eq 'Full')
     $hasMda = $hasMdi
     $mdiLink = 'https://security.microsoft.com/securitysettings/identities'
-    $mdiText = 'ALSO guide: Defender for Identity (Extend identity, step 1)'
-    $mcaText = 'ALSO guide: Integrate Defender for Cloud Apps with Defender for Endpoint (Email, apps and collaboration, step 1 of the E5 section)'
-    $agText = 'ALSO guide: Configure app governance (Email, apps and collaboration, step 3 of the E5 section)'
+    $mdiText = 'Microsoft Learn'
+    $mcaText = 'Microsoft Learn'
+    $agText = 'Microsoft Learn'
     if ($hasMdi) {
         Add-Result 'DefenderGuidance' 'Defender for Identity readiness / sensor deployment' $na 'Ready' Manual $mdiLink 'Defender for Identity watches domain controllers and Entra for identity attacks. Deploy sensors on domain controllers and check the health status in the Defender portal.' ($GuideBase + '#defender-identity') $mdiText
     }
@@ -1439,7 +1478,7 @@ function Find-SimilarPolicy([string]$Fp, $Candidates, [int]$Min = 50) {
 function Step-ConditionalAccess {
     Write-Step 'Conditional Access baseline' 'Imports ALSO''s Conditional Access policies (switched OFF), recognises policies you already have, and keeps the break-glass group excluded from every policy.'
     $doc = $GuideBase + '#identity-policies'
-    $docText = 'ALSO guide: Conditional Access baseline (Identity and access, step 10)'
+    $docText = 'Microsoft Learn'
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
     $lic = Get-LicenseTier
     $caBase = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
@@ -1592,7 +1631,7 @@ foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group $
         $notIn = @($ids | Where-Object { $_ -notin $auMembers })
         Compare-Setting 'ConditionalAccess' "ALSO Conditional Access groups inside restricted management unit '$BreakGlassAuName'" "$($ids.Count - $notIn.Count) of $($ids.Count) groups inside" "$($ids.Count) of $($ids.Count) groups inside" {
             foreach ($id in $notIn) { Graph POST "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/members/`$ref" @{ '@odata.id' = "https://graph.microsoft.com/v1.0/groups/$id" } | Out-Null }
-        } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits' 'Groups used in Conditional Access decide who is protected or excluded. Inside the restricted management unit only the administrators of that unit can change their membership.' ($GuideBase + '#restricted-management-admin-units') 'ALSO guide: Restricted management administrative units (Identity and access, step 11)'
+        } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AdministrativeUnitsMenuBlade/~/AdminUnits' 'Groups used in Conditional Access decide who is protected or excluded. Inside the restricted management unit only the administrators of that unit can change their membership.' ($GuideBase + '#restricted-management-admin-units') 'Microsoft Learn'
     }
     Add-Result 'ConditionalAccess' 'Review, test and switch on the imported policies' 'Imported policies are switched off' 'Each policy tested in report-only, then enabled' Manual $link 'Open each ALSO policy, set it to Report-only, review the impact in the sign-in logs, then enable it. Turn security defaults off once the policies are on. Policies for Entra ID P2 and the Tier 0 authentication context also need the matching role settings in Privileged Identity Management.' $doc $docText
 }
@@ -1600,7 +1639,7 @@ foreach ($d in $dups) { $dn++; Add-Result 'ConditionalAccess' "Duplicate group $
 function Step-PrivilegedAccess {
     Write-Step 'Administrator roles and access reviews' 'Few permanent Global Administrators, eligible (just-in-time) roles and regular reviews.'
     $doc = $GuideBase + '#admin-role-review'
-    $docText = 'ALSO guide: Review administrator roles (Identity and access, step 4)'
+    $docText = 'Microsoft Learn'
     $lic = Get-LicenseTier
     $link = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/RolesManagementMenuBlade/~/AllRoles'
     $gaId = '62e90394-69f5-4237-9190-012177145e10'
@@ -1632,7 +1671,7 @@ function Step-PrivilegedAccess {
             $elig = @(Get-AllPages 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances')
             Add-Result 'PrivilegedAccess' 'Eligible (just-in-time) role assignments' "$($elig.Count)" 'Used for day-to-day administration' Info $link 'Eligible assignments must be activated (with MFA and a reason) before they work, which limits the time an admin account is powerful.' $doc $docText
         }
-        $arDoc = $GuideBase + '#access-reviews'; $arText = 'ALSO guide: Access reviews (Extend identity, step 2)'
+        $arDoc = $GuideBase + '#access-reviews'; $arText = 'Microsoft Learn'
         $arLink = 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/elmEntitlement'
         Invoke-Part 'PrivilegedAccess' 'Access reviews' {
             $ar = @(Get-AllPages 'https://graph.microsoft.com/v1.0/identityGovernance/accessReviews/definitions')
@@ -1641,9 +1680,9 @@ function Step-PrivilegedAccess {
         }
         Set-PimAuthContext
     }
-    else { Add-Result 'PrivilegedAccess' 'Eligible roles and access reviews' 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'Privileged Identity Management and access reviews need Entra ID P2, so this part is skipped.' ($GuideBase + '#access-reviews') 'ALSO guide: Access reviews (Extend identity, step 2)' }
+    else { Add-Result 'PrivilegedAccess' 'Eligible roles and access reviews' 'Not licensed' 'Requires Entra ID P2 (Microsoft 365 E5, E7 or a security suite)' Skipped $link 'Privileged Identity Management and access reviews need Entra ID P2, so this part is skipped.' ($GuideBase + '#access-reviews') 'Microsoft Learn' }
     Set-Group 'To do by a person'
-    Add-Result 'PrivilegedAccess' 'Review application owners and admin role holders' 'Cannot be judged automatically' 'Reviewed and documented' Manual $link 'Check every administrator and the owners of enterprise applications. Remove people who do not need access. Need4Admin (linked in the ALSO guide) lists administrators and their roles in one report.' $doc $docText
+    Add-Result 'PrivilegedAccess' 'Review application owners and admin role holders' 'Cannot be judged automatically' 'Reviewed and documented' Manual $link 'Check every administrator and the owners of enterprise applications. Remove people who do not need access. The free Need4Admin report lists administrators and their roles in one report.' $doc $docText
 }
 
 function Get-ArmToken([string]$TenantId) {
@@ -1676,7 +1715,7 @@ function Get-ArmToken([string]$TenantId) {
 
 function Set-PimAuthContext {
     $doc = $GuideBase + '#admin-role-review'
-    $docText = 'ALSO guide: Review administrator roles (Identity and access, step 4)'
+    $docText = 'Microsoft Learn'
     $link = 'https://entra.microsoft.com/#view/Microsoft_Azure_PIMCommon/ResourceMenuBlade/~/roles/resourceId//resourceType/tenant/provider/aadroles'
     $why = 'When an admin activates a privileged role in Privileged Identity Management, the activation must satisfy the ALSO "Tier 0 Admins" authentication context. The Conditional Access policy tied to that context then requires phishing-resistant MFA (passkey / FIDO2, Windows Hello) on every activation. PIM cannot ask for plain MFA and an authentication context at the same time, so the plain MFA requirement is replaced by the context.'
     Set-Group 'Authentication context on privileged role activation (Entra ID P2)'
@@ -1831,12 +1870,12 @@ function Step-IntunePolicies {
     }
     Write-Host "   Platforms: $($sel -join ', ')" -ForegroundColor DarkGray
     $pk = [ordered]@{
-        'device-compliance'   = @('Device compliance policies', '#compliance', 'ALSO guide: Device compliance (Endpoints, step 9)')
-        'app-protection'      = @('App protection policies (iOS and Android)', '#app-protection', 'ALSO guide: App protection (Endpoints, step 8)')
-        'device-security'     = @('Device security: BitLocker and local admin passwords (LAPS)', '#local-admin', 'ALSO guide: Local admin and LAPS (Endpoints, step 4)')
-        'defender-onboarding' = @('Defender for Endpoint onboarding profiles', '#defender-onboarding', 'ALSO guide: Defender provisioning and onboarding (Endpoints, step 10)')
-        'defender-security'   = @('Defender and firewall baseline', '#endpoint-baseline', 'ALSO guide: Defender and firewall minimum configuration (Endpoints, step 11)')
-        'browser-protection'  = @('Microsoft Edge browser protection', '#browser', 'ALSO guide: Browser protection (Endpoints, step 12)')
+        'device-compliance'   = @('Device compliance policies', '#compliance', 'Microsoft Learn')
+        'app-protection'      = @('App protection policies (iOS and Android)', '#app-protection', 'Microsoft Learn')
+        'device-security'     = @('Device security: BitLocker and local admin passwords (LAPS)', '#local-admin', 'Microsoft Learn')
+        'defender-onboarding' = @('Defender for Endpoint onboarding profiles', '#defender-onboarding', 'Microsoft Learn')
+        'defender-security'   = @('Defender and firewall baseline', '#endpoint-baseline', 'Microsoft Learn')
+        'browser-protection'  = @('Microsoft Edge browser protection', '#browser', 'Microsoft Learn')
     }
     $link = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview'
     $norm = { param($s) ("$s" -replace '[^\p{L}\p{N}]', '').ToLower() }
@@ -1847,7 +1886,7 @@ function Step-IntunePolicies {
         $meta = $pk[$pkg]; $doc = $GuideBase + $meta[1]
         Set-Group $meta[0]
         try { $dir = Get-GuidePackage $pkg }
-        catch { Add-Result 'IntunePolicies' $meta[0] "Package could not be downloaded: $($_.Exception.Message)" 'Imported' Manual $link 'Download the policy package from the ALSO guide and import it in Intune.' $doc $meta[2]; continue }
+        catch { Add-Result 'IntunePolicies' $meta[0] "Package could not be downloaded: $($_.Exception.Message)" 'Imported' Manual $link 'Download the policy package from the ALSO Security Policy Templates Navigator and import it in Intune.' $doc $meta[2]; continue }
         $items = @()
         foreach ($x in (Get-PackageJson $dir $null)) {
             if ($x.File.Name -eq 'MigrationTable.json') { continue }
@@ -1897,16 +1936,16 @@ function Step-IntunePolicies {
             $seen[$id] = $true; $anyEx = $true
             $en = if ($ex.displayName) { $ex.displayName } else { $ex.name }
             $kind = ("$($ex.'@odata.type')" -replace '^#?microsoft\.graph\.', '')
-            Add-Result 'IntunePolicies' "$en" "Existing policy$(if ($kind) { " ($kind)" })" 'Reviewed' Info $link 'This policy already exists in your tenant. It is not part of the ALSO baseline and is not changed by this script. Review it and check that it does not conflict with the ALSO policies.' $GuideBase 'ALSO guide: Endpoints'
+            Add-Result 'IntunePolicies' "$en" "Existing policy$(if ($kind) { " ($kind)" })" 'Reviewed' Info $link 'This policy already exists in your tenant. It is not part of the ALSO baseline and is not changed by this script. Review it and check that it does not conflict with the ALSO policies.' $GuideBase 'Microsoft Learn'
         }
     }
-    if (-not $anyEx) { Add-Result 'IntunePolicies' 'Other Intune policies' 'None found' 'Reviewed' Info $link 'No other policies of these types exist in your tenant yet.' $GuideBase 'ALSO guide: Endpoints' }
+    if (-not $anyEx) { Add-Result 'IntunePolicies' 'Other Intune policies' 'None found' 'Reviewed' Info $link 'No other policies of these types exist in your tenant yet.' $GuideBase 'Microsoft Learn' }
     Set-Group 'Apple and enrollment'
     if ($manualBits.Count) {
-        Add-Result 'IntunePolicies' 'Defender for Endpoint macOS app and tenant-specific onboarding files' ($manualBits -join '; ') 'Added by an administrator' Manual 'https://security.microsoft.com/securitysettings/endpoints/onboarding' 'The macOS Defender app is a software package and the macOS onboarding file contains a key that belongs to one tenant. Download the onboarding package from the Defender portal (Settings > Endpoints > Onboarding), then add the app and profile in Intune.' ($GuideBase + '#defender-onboarding') 'ALSO guide: Defender provisioning and onboarding (Endpoints, step 10)'
+        Add-Result 'IntunePolicies' 'Defender for Endpoint macOS app and tenant-specific onboarding files' ($manualBits -join '; ') 'Added by an administrator' Manual 'https://security.microsoft.com/securitysettings/endpoints/onboarding' 'The macOS Defender app is a software package and the macOS onboarding file contains a key that belongs to one tenant. Download the onboarding package from the Defender portal (Settings > Endpoints > Onboarding), then add the app and profile in Intune.' ($GuideBase + '#defender-onboarding') 'Microsoft Learn'
     }
     if ($sel -contains 'ios' -or $sel -contains 'macos') {
-        $apDoc = $GuideBase + '#apple-enrollment'; $apText = 'ALSO guide: Supported platforms and Apple enrollment (Endpoints, step 3)'
+        $apDoc = $GuideBase + '#apple-enrollment'; $apText = 'Microsoft Learn'
         $apLink = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/appleEnrollment'
         try {
             $apns = Graph GET 'https://graph.microsoft.com/beta/deviceManagement/applePushNotificationCertificate'
@@ -1920,7 +1959,7 @@ function Step-IntunePolicies {
     }
     try {
         $er = @(Get-AllPages 'https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations' | Where-Object { "$($_.'@odata.type')" -match 'PlatformRestriction' })
-        Add-Result 'IntunePolicies' 'Enrollment platform restrictions' "$($er.Count) restriction policy(ies)" 'Only supported platforms can enroll' Info 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/restrictions' 'Limit enrollment to the platforms you support and decide whether personally owned devices may enroll.' ($GuideBase + '#apple-enrollment') 'ALSO guide: Supported platforms (Endpoints, step 3)'
+        Add-Result 'IntunePolicies' 'Enrollment platform restrictions' "$($er.Count) restriction policy(ies)" 'Only supported platforms can enroll' Info 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/restrictions' 'Limit enrollment to the platforms you support and decide whether personally owned devices may enroll.' ($GuideBase + '#apple-enrollment') 'Microsoft Learn'
     }
     catch { }
 }
@@ -2009,7 +2048,7 @@ function Step-Purview {
     Write-Step 'Microsoft Purview baseline' 'Reads your existing Purview labels and policies, compares each setting with ALSO''s Purview baseline, and (in Enforce mode) deploys what is missing.'
     $repo = 'https://github.com/CoC-MS/ALSO-Microsoft-Security-Purview'
     $doc = $GuideBase + '#purview-baseline'
-    $docText = 'ALSO guide: Purview baseline (Data security and governance, step 1)'
+    $docText = 'Microsoft Learn'
     $tier = (Get-LicenseTier).Tier
     $lbl = 'https://purview.microsoft.com/informationprotection/labels'
     $lpL = 'https://purview.microsoft.com/informationprotection/labelpolicies'
@@ -2342,16 +2381,16 @@ function Step-Purview {
 }
 
 function Step-GuideManual {
-    Write-Step 'Remaining guide steps (manual)' 'Steps in the ALSO guide that need people or portal-only decisions.'
+    Write-Step 'Remaining readiness steps (manual)' 'Security and Copilot readiness steps that need people or portal-only decisions.'
     $rows = @(
-        @('Data Access Governance report (find oversharing before Copilot)', 'Not started', 'Run and reviewed', 'https://admin.microsoft.com/sharepoint?page=dataAccessGovernance', 'Data Access Governance reports show sites with broad sharing or sensitive content. Review the reports and fix oversharing before enabling Copilot.', '#data-access-governance', 'ALSO guide: Data Access Governance (Identity and access, step 8)'),
-        @('Self-service password reset pilot', 'Cannot be judged automatically', 'Enabled for a pilot group, then everyone', 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/PasswordResetMenuBlade/~/Properties', 'Self-service password reset reduces help desk calls. Start with a pilot group, confirm that users have registered methods, then widen the scope.', '#sspr', 'ALSO guide: Self-service password reset (Identity and access, step 9)'),
-        @('Apple Business Manager / automated device enrollment', 'Cannot be checked automatically', 'Connected if you manage Apple devices', 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/appleEnrollment', 'Apple Business Manager lets you enroll company iPhones, iPads and Macs automatically. It needs an Apple ID and a decision by your organization.', '#apple-enrollment', 'ALSO guide: Supported platforms and Apple enrollment (Endpoints, step 3)'),
-        @('Assign the imported Intune policies to pilot groups', 'Imported policies have no assignments', 'Assigned to a pilot group, then widened', 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview', 'Who gets each policy is your decision. Assign to a pilot group first, review reports for conflicts, then widen.', '#compliance', 'ALSO guide: Device compliance (Endpoints, step 9)'),
-        @('Information protection classification and user training', 'Not started', 'Labels explained to users', 'https://purview.microsoft.com/informationprotection/labels', 'Labels only protect data when people use them. Explain the label meanings and let users practice before enforcing.', '#classification', 'ALSO guide: Classification (Data security and governance, step 2)'),
-        @('Restricted content discovery for Copilot', 'Cannot be read automatically', 'Applied to sensitive sites', 'https://admin.microsoft.com/sharepoint?page=sites', 'Restricted content discovery stops Copilot and search from surfacing content on selected SharePoint sites. Choose the sites together with the business.', '#restricted-content-discovery', 'ALSO guide: Restricted content discovery (Copilot preparation, step 1)'),
-        @('Copilot settings (web search, agents, data sharing)', 'Cannot be read automatically', 'Reviewed', 'https://admin.cloud.microsoft/?#/copilot/settings', 'Decide which Copilot features are allowed for your users and review agent and web search settings.', '#copilot-settings', 'ALSO guide: Copilot settings (Copilot preparation, step 2)'),
-        @('Copilot adoption and user guidance', 'Not started', 'Rollout plan with a pilot group and training', 'https://adoption.microsoft.com/copilot/', 'A pilot group, training and champions make the Copilot rollout successful. This is an organizational task.', '#copilot-adoption-guidance', 'ALSO guide: Copilot adoption guidance (Copilot preparation, step 3)')
+        @('Data Access Governance report (find oversharing before Copilot)', 'Not started', 'Run and reviewed', 'https://admin.microsoft.com/sharepoint?page=dataAccessGovernance', 'Data Access Governance reports show sites with broad sharing or sensitive content. Review the reports and fix oversharing before enabling Copilot.', '#data-access-governance', 'Microsoft Learn'),
+        @('Self-service password reset pilot', 'Cannot be judged automatically', 'Enabled for a pilot group, then everyone', 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/PasswordResetMenuBlade/~/Properties', 'Self-service password reset reduces help desk calls. Start with a pilot group, confirm that users have registered methods, then widen the scope.', '#sspr', 'Microsoft Learn'),
+        @('Apple Business Manager / automated device enrollment', 'Cannot be checked automatically', 'Connected if you manage Apple devices', 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesEnrollmentMenu/~/appleEnrollment', 'Apple Business Manager lets you enroll company iPhones, iPads and Macs automatically. It needs an Apple ID and a decision by your organization.', '#apple-enrollment', 'Microsoft Learn'),
+        @('Assign the imported Intune policies to pilot groups', 'Imported policies have no assignments', 'Assigned to a pilot group, then widened', 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview', 'Who gets each policy is your decision. Assign to a pilot group first, review reports for conflicts, then widen.', '#compliance', 'Microsoft Learn'),
+        @('Information protection classification and user training', 'Not started', 'Labels explained to users', 'https://purview.microsoft.com/informationprotection/labels', 'Labels only protect data when people use them. Explain the label meanings and let users practice before enforcing.', '#classification', 'Microsoft Learn'),
+        @('Restricted content discovery for Copilot', 'Cannot be read automatically', 'Applied to sensitive sites', 'https://admin.microsoft.com/sharepoint?page=sites', 'Restricted content discovery stops Copilot and search from surfacing content on selected SharePoint sites. Choose the sites together with the business.', '#restricted-content-discovery', 'Microsoft Learn'),
+        @('Copilot settings (web search, agents, data sharing)', 'Cannot be read automatically', 'Reviewed', 'https://admin.cloud.microsoft/?#/copilot/settings', 'Decide which Copilot features are allowed for your users and review agent and web search settings.', '#copilot-settings', 'Microsoft Learn'),
+        @('Copilot adoption and user guidance', 'Not started', 'Rollout plan with a pilot group and training', 'https://adoption.microsoft.com/copilot/', 'A pilot group, training and champions make the Copilot rollout successful. This is an organizational task.', '#copilot-adoption-guidance', 'Microsoft Learn')
     )
     foreach ($r in $rows) { Add-Result 'GuideManual' $r[0] $r[1] $r[2] Manual $r[3] $r[4] ($GuideBase + $r[5]) $r[6] }
 }
@@ -2758,7 +2797,7 @@ $cats = [ordered]@{
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
     Copilot = 'Microsoft 365 Copilot'; TeamsApps = 'Collaboration: Microsoft Teams'; MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
     ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
-    IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; AuditLog = 'Data: Microsoft Purview'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
+    IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; AuditLog = 'Data: Microsoft Purview'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other readiness steps'
 }
 $label = @{ Compliant = 'Compliant'; Fixed = 'Fixed'; Drift = 'Needs change'; Manual = 'Manual action'; Info = 'Info'; Error = 'Error'; Skipped = 'Skipped' }
 $reportResults = @($script:Results | Where-Object Step -ne 'Licensing')
@@ -2801,7 +2840,7 @@ $manualCount = @($reportResults | Where-Object Status -eq 'Manual').Count
 $autoCount = $total - $manualCount
 $tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks and actions ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual checks and actions ($manualCount)</button></div>"
 $manualIntro = "<p class='intro'>These items cannot be read or changed automatically because Microsoft offers no API for them, or they need a person to decide. Work through them in the portal using the links and guides.</p>"
-$js = "function fl(f){document.querySelectorAll('.fl[data-f]').forEach(function(b){b.classList.toggle('on',b.dataset.f===f)});document.querySelectorAll('tr[data-f]').forEach(function(r){r.style.display=(f==='all'||r.dataset.f===f||r.dataset.f==='grp')?'':'none'})}function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
+$js = "function fl(f){document.querySelectorAll('.fl[data-f]').forEach(function(b){b.classList.toggle('on',b.dataset.f===f)});var shown=0;document.querySelectorAll('#auto section').forEach(function(s){var any=false,g=null,gv=false;s.querySelectorAll('tr[data-f]').forEach(function(r){if(r.dataset.f==='grp'){if(g){g.style.display=gv?'':'none'}g=r;gv=false;return}var v=f==='all'||r.dataset.f===f;r.style.display=v?'':'none';if(v){gv=true;any=true}});if(g){g.style.display=gv?'':'none'}s.style.display=any?'':'none';if(any){shown++}});document.getElementById('none').style.display=shown?'none':'block'}function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
 $css = @'
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fa;color:#1d2b3a}
 header{background:#fff;border-bottom:1px solid #dde3ea;padding:20px 40px}
@@ -2842,7 +2881,7 @@ if ($Mode -in 'Enforce', 'Wipe') {
     $b4 = & $liBox 'Still to do by a person' 'Manual' $mnR { param($r) $(if ($r.Link) { " <a href='$(& $enc $r.Link)' target='_blank'>open &rarr;</a>" }) } 'No manual steps remain.'
     $runBox = "<section class='run'><h2>What happened in this run</h2><p class='intro'>This is the result of your $Mode run: what was done, what failed and why, what you left out and what still needs a person. The full details per setting are in the tabs below.</p><div class='rbs'>$b1$b2$b3$b4</div></section>"
 }
-$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main>$runBox<div class='cards'>$($cards -join '')</div>$tabs<div class='pane' id='auto'>$filters$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
+$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main>$runBox<div class='cards'>$($cards -join '')</div>$tabs<div class='pane' id='auto'>$filters<p id='none' class='intro' style='display:none'>Nothing in this view.</p>$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
 [IO.File]::WriteAllText($html, $page, (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "`nSummary:" -ForegroundColor Cyan
