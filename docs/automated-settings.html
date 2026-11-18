@@ -133,7 +133,8 @@ table.set td:first-child{font-weight:600;width:42%}
   <table class="set"><tr><th>Item</th><th>What the script does</th></tr>
     <tr><td>Sensitivity labels for Microsoft 365 groups, Teams and sites</td><td>Off &rarr; On</td></tr>
     <tr><td>Sensitivity labels for SharePoint, OneDrive and PDF files</td><td>Off &rarr; On</td></tr>
-    <tr><td>ALSO Purview baseline</td><td>Creates or updates sensitivity labels, the label policy and DLP policies (DLP starts in simulation mode so nothing is blocked by surprise)</td></tr>
+    <tr><td>ALSO Purview baseline</td><td>Deployed with ALSO's Purview toolkit, unchanged: sensitivity labels, the label policy and DLP policies (DLP starts in simulation mode so nothing is blocked by surprise). Before anything is deployed, every existing label and policy is compared with the baseline and explained in the report</td></tr>
+    <tr><td>Licensing</td><td>The policy name shows the license it needs. <b>BP</b> items need Microsoft 365 Business Premium, E3 or F3. <b>E5</b> items (Endpoint DLP and the Copilot protection) need Microsoft 365 E5, E7 or the Purview suite add-on. Items your licenses do not include are skipped and marked in the report</td></tr>
     <tr><td>7-year Exchange retention policy</td><td>Optional. Only deployed if you explicitly confirm it, because mail is deleted after 7 years</td></tr>
   </table>
 
@@ -142,8 +143,9 @@ table.set td:first-child{font-weight:600;width:42%}
   <table class="set"><tr><th>Area</th><th>What can be removed or set back</th></tr>
     <tr><td>Break-glass</td><td>The two accounts, their group and the restricted management unit</td></tr>
     <tr><td>Conditional Access, Intune and Purview</td><td>The ALSO baseline items that Enforce deployed</td></tr>
-    <tr><td>Privileged role activation</td><td>The authentication context requirement on Entra roles is removed and multifactor authentication is required again</td></tr>
-    <tr><td>Tenant-wide settings</td><td>User settings, app consent, SharePoint sharing, LAPS and Intune enrollment can be set back to Microsoft defaults</td></tr>
+    <tr><td>Privileged role activation</td><td>The authentication context requirement on Entra roles and Azure roles is removed and multifactor authentication is required again</td></tr>
+    <tr><td>Tenant-wide settings</td><td>User settings, app consent, SharePoint sharing, LAPS, Intune enrollment, Copilot self-service purchase and Teams app permissions can be set back to Microsoft defaults</td></tr>
+    <tr><td>Settings without a Microsoft default</td><td>Audit log, passkeys and other sign-in methods, security defaults, Exchange Online protection presets, Defender for Endpoint connection settings and the sensitivity label settings are set back to the value they had before Enforce changed them. Wipe reads this from the Enforce reports saved in your report folder, so keep those reports</td></tr>
   </table>
 
   <h2 id="manual"><span>&bull;</span> Checked automatically, changed by you</h2>

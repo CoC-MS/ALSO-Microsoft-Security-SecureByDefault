@@ -97,7 +97,7 @@ function Add-Result {
         if ($m) { $Doc = $LearnBase + $m[0]; $DocText = $m[1] } else { $DocText = 'Microsoft 365 security and Copilot readiness' }
     }
     if (-not $DocText) { $DocText = 'Microsoft Learn' }
-    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Group = $script:Group; Doc = $Doc; DocText = $DocText })
+    $script:Results.Add([pscustomobject]@{ Step = $Step; Setting = $Setting; Current = "$Current"; Expected = "$Expected"; Status = $Status; Link = $Link; Detail = "$Detail"; Group = $script:Group; Doc = $Doc; DocText = $DocText; Tenant = "$initialDomain" })
     $color = @{ Compliant = 'Green'; Fixed = 'Green'; Drift = 'Yellow'; Manual = 'Cyan'; Info = 'Gray'; Error = 'Red'; Skipped = 'DarkGray' }[$Status]
     $msg = switch ($Status) {
         'Compliant' { "${Setting}: $Current" }
@@ -540,12 +540,17 @@ function Get-SpoTenantCsom {
     $r = Invoke-SpoCsom '<ObjectPath Id="2" ObjectPathId="1" /><Query Id="3" ObjectPathId="1"><Query SelectAllProperties="true"><Properties /></Query></Query>' $spoTenantPath
     @($r) | Where-Object { $_ -and $_.PSObject.Properties['EnableAIPIntegration'] } | Select-Object -First 1
 }
-function Set-SpoTenantCsom([string]$Name) {
+function Set-SpoTenantCsom([string]$Name, [bool]$Value = $true) {
     if ($script:SpoMode -eq 'module') {
-        if ($Name -eq 'EnableSensitivityLabelforPDF') { Set-SPOTenant -EnableSensitivityLabelforPDF $true -ErrorAction Stop } else { Set-SPOTenant -EnableAIPIntegration $true -ErrorAction Stop }
+        if ($Name -eq 'EnableSensitivityLabelforPDF') { Set-SPOTenant -EnableSensitivityLabelforPDF $Value -ErrorAction Stop } else { Set-SPOTenant -EnableAIPIntegration $Value -ErrorAction Stop }
         return
     }
-    [void](Invoke-SpoCsom "<ObjectPath Id=`"2`" ObjectPathId=`"1`" /><SetProperty Id=`"3`" ObjectPathId=`"1`" Name=`"$Name`"><Parameter Type=`"Boolean`">true</Parameter></SetProperty>" $spoTenantPath)
+    [void](Invoke-SpoCsom "<ObjectPath Id=`"2`" ObjectPathId=`"1`" /><SetProperty Id=`"3`" ObjectPathId=`"1`" Name=`"$Name`"><Parameter Type=`"Boolean`">$("$Value".ToLower())</Parameter></SetProperty>" $spoTenantPath)
+}
+function Connect-SpoLazy {
+    if ($script:SpoOk) { return }
+    $script:SpoToken = Get-BrowserToken @('.default') $true '9bc3ab49-b65d-410a-85ad-de819febfddc' $SharePointAdminUrl 'SharePoint admin center' ''
+    $script:SpoOk = $true; $script:SpoMode = 'csom'
 }
 #endregion
 
@@ -564,7 +569,11 @@ function Get-LicenseTier {
     elseif ($parts | Where-Object { $_ -match $basicRx }) { 'Basic' }
     elseif ($plans | Where-Object { $_ -match 'INTUNE_A|WINDEFATP|MDE_SMB|AAD_PREMIUM' }) { 'Standard' }
     else { 'Standard' }
-    $script:LicenseInfo = [pscustomobject]@{ Tier = $tier; Skus = ($parts -join ', '); HasP2 = [bool]($plans -contains 'AAD_PREMIUM_P2') }
+    # Purview licensing follows ALSO's Purview toolkit: 'E5' policies need Microsoft 365 E5, E7 or the Purview suite add-on, 'BP' policies need Business Premium, E3 or F3.
+    $pvE5 = [bool](($parts | Where-Object { $_ -match 'SPE_E5|M365_E5|Microsoft_365_E5|SPE_E7|M365_E7|Microsoft_365_E7|PURVIEW.*SUITE|INFORMATION_PROTECTION_COMPLIANCE|DEVELOPERPACK_E5|M365EDU_A5|SPE_A5|M365_G5' }) -or ($plans -contains 'MICROSOFTENDPOINTDLP'))
+    $pvBP = [bool](($parts | Where-Object { $_ -match '^SPB|Microsoft_365_Business_Premium|SPE_E3|M365_E3|Microsoft_365_E3|^SPE_F1$|SPE_F3|M365_F3|Microsoft_365_F3|^DEVELOPERPACK$|M365EDU_A3|SPE_A3|M365_G3' }) -or ($plans -contains 'MIP_S_CLP1'))
+    $pvTier = if ($pvE5) { 'E5' } elseif ($pvBP) { 'BP' } else { 'None' }
+    $script:LicenseInfo = [pscustomobject]@{ Tier = $tier; PvTier = $pvTier; Skus = ($parts -join ', '); HasP2 = [bool]($plans -contains 'AAD_PREMIUM_P2') }
     $script:LicenseInfo
 }
 
@@ -1965,22 +1974,36 @@ function Step-IntunePolicies {
     catch { }
 }
 
-function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 900) {
+function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 1800) {
+    # Runs ALSO's Purview toolkit unchanged. Its output is passed through as it arrives, including
+    # questions that do not end with a line break, so a prompt from the toolkit is always visible.
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $psi.Arguments = (@($ChildArgs) | ForEach-Object { '"' + (("$_") -replace '"', '\"') + '"' }) -join ' '
     $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
     $p = [Diagnostics.Process]::Start($psi)
-    $tOut = $p.StandardOutput.ReadLineAsync(); $tErr = $p.StandardError.ReadLineAsync()
+    $buf = New-Object char[] 4096
+    $tOut = $p.StandardOutput.ReadAsync($buf, 0, $buf.Length); $tErr = $p.StandardError.ReadLineAsync()
     $outDone = $false; $errDone = $false
     $last = [DateTime]::UtcNow; $lastBeat = $last; $lastLine = ''
+    $pending = ''; $shown = 0
     # Toolkit start-up banner and technical sign-in diagnostics are not useful to the person running Secure by Default.
     $hide = '^\s*(Microsoft Purview Best Practice Deployment v|Config: |WAM broker|Note: first-time consent|MSAL DLL check)'
     while (-not ($outDone -and $errDone)) {
         $got = $false
         if (-not $outDone -and $tOut.IsCompleted) {
-            $l = $tOut.Result
-            if ($null -eq $l) { $outDone = $true } else { $got = $true; if ($l -notmatch $hide) { $lastLine = $l; Write-Host $l }; $tOut = $p.StandardOutput.ReadLineAsync() }
+            $n = $tOut.Result
+            if ($n -le 0) { $outDone = $true; if ($pending.Length -gt $shown) { Write-Host $pending.Substring($shown) } elseif ($shown) { Write-Host '' }; $pending = ''; $shown = 0 }
+            else {
+                $got = $true
+                $pending += [string]::new($buf, 0, $n)
+                while (($ix = $pending.IndexOf("`n")) -ge 0) {
+                    $l = $pending.Substring(0, $ix).TrimEnd("`r"); $pending = $pending.Substring($ix + 1)
+                    if ($shown) { Write-Host $(if ($l.Length -gt $shown) { $l.Substring($shown) } else { '' }); $shown = 0; $lastLine = $l }
+                    elseif ($l -notmatch $hide) { if ($l.Trim()) { $lastLine = $l }; Write-Host $l }
+                }
+                $tOut = $p.StandardOutput.ReadAsync($buf, 0, $buf.Length)
+            }
         }
         if (-not $errDone -and $tErr.IsCompleted) {
             $l = $tErr.Result
@@ -1988,15 +2011,19 @@ function Invoke-PvChild([string[]]$ChildArgs, [int]$SilentLimitSec = 900) {
         }
         if ($got) { $last = [DateTime]::UtcNow; $lastBeat = $last; continue }
         $quiet = ([DateTime]::UtcNow - $last).TotalSeconds
-        $limit = if ($lastLine -match 'priority|unmanaged live sub-label') { [Math]::Min($SilentLimitSec, 240) } else { $SilentLimitSec }
-        if ($quiet -ge $limit) {
-            Write-Host "   No progress for $([int]($limit / 60)) minutes - stopping the Purview script." -ForegroundColor Red
+        # Text without a line break that stays for a moment is a question from the toolkit: show it so it can be answered.
+        if ($quiet -ge 1.5 -and $pending.Length -gt $shown -and $pending.Substring($shown).Trim()) {
+            Write-Host $pending.Substring($shown) -NoNewline -ForegroundColor Yellow; $shown = $pending.Length; $lastLine = $pending
+        }
+        if ($quiet -ge $SilentLimitSec) {
+            if ($shown) { Write-Host '' }
+            Write-Host "   No progress for $([int]($SilentLimitSec / 60)) minutes - stopping the Purview script." -ForegroundColor Red
             try { & taskkill.exe /PID $p.Id /T /F | Out-Null } catch { try { $p.Kill() } catch { } }
             return [pscustomobject]@{ Code = -1; TimedOut = $true; LastLine = $lastLine }
         }
-        if (([DateTime]::UtcNow - $lastBeat).TotalSeconds -ge 60) {
+        if (-not $shown -and ([DateTime]::UtcNow - $lastBeat).TotalSeconds -ge 60) {
             $lastBeat = [DateTime]::UtcNow
-            Write-Host ("   ...still waiting for Microsoft ({0} min without news). Last step: {1}" -f [int][Math]::Floor($quiet / 60), $lastLine.Trim()) -ForegroundColor DarkGray
+            Write-Host ("   ...ALSO's Purview toolkit is still working, Microsoft answers slowly here ({0} min since its last message). Last step: {1}" -f [int][Math]::Floor($quiet / 60), $lastLine.Trim()) -ForegroundColor DarkGray
         }
         Start-Sleep -Milliseconds 200
     }
@@ -2023,21 +2050,7 @@ function ConvertTo-Psd1($v) {
     Expand-Archive $zip -DestinationPath $tmp -Force
     Move-Item (Get-ChildItem $tmp -Directory | Select-Object -First 1).FullName $dir
     Remove-Item $tmp -Recurse -Force
-    # Progress lines only: the label order step is slow and otherwise silent.
-    $lf = Join-Path $dir 'Purview\Modules\Setup-SensitivityLabels.ps1'
-    if (Test-Path $lf) {
-        $t = [IO.File]::ReadAllText($lf) -replace "`r`n", "`n"
-        $t = $t.Replace('    $peek = @(Get-Label -ErrorAction SilentlyContinue', '    Write-Host "    ...checking label ''$displayStr'' (Microsoft answers slowly, this can take a minute)" -ForegroundColor DarkGray' + "`n" + '    $peek = @(Get-Label -ErrorAction SilentlyContinue')
-        $t = $t.Replace('    foreach ($c in $cands) {' + "`n" + '        try {' + "`n" + '            Invoke-WithTransientRetry -Description ("Set-Label priority=', '    foreach ($c in $cands) {' + "`n" + '        Write-Host "    ...moving label ''$DisplayNameForLog'' to position $TargetPriority" -ForegroundColor DarkGray' + "`n" + '        try {' + "`n" + '            Invoke-WithTransientRetry -Description ("Set-Label priority=')
-        # Label ordering (Pass 3) is the step where Microsoft stalls; allow skipping it when the labels already exist.
-        $p3 = 'Write-Host "Setting label priority order..." -ForegroundColor Cyan'
-        $p4 = "`n# ---------------------------------------------------------------------------`n# Pass 4"
-        if (([regex]::Matches($t, [regex]::Escape($p3)).Count -eq 1) -and ([regex]::Matches($t, [regex]::Escape($p4)).Count -eq 1) -and $t.IndexOf($p3) -lt $t.IndexOf($p4)) {
-            $t = $t.Replace($p3, 'if ($env:SBD_SKIP_LABEL_ORDER -eq ''1'') { Write-Host "Label order: existing labels found, order left as-is (check it in the Purview portal)." -ForegroundColor DarkGray } else {' + "`n" + $p3)
-            $t = $t.Replace($p4, "`n}" + $p4)
-        }
-        [IO.File]::WriteAllText($lf, $t, (New-Object Text.UTF8Encoding($true)))
-    }
+    # The toolkit is used exactly as published by ALSO: no file in it is changed.
     $dir
 }
 
@@ -2060,6 +2073,12 @@ function Step-Purview {
     $doc = $GuideBase + '#purview-baseline'
     $docText = 'Microsoft Learn'
     $tier = (Get-LicenseTier).Tier
+    $pvTier = (Get-LicenseTier).PvTier
+    $pvSkus = (Get-LicenseTier).Skus
+    # Same licensing rule as ALSO's Purview toolkit: the name prefix of a policy says which licenses it needs.
+    $licOk = { param($n) if ("$n" -like 'E5*') { $pvTier -eq 'E5' } else { $pvTier -in 'BP', 'E5' } }
+    $licNeed = { param($n) if ("$n" -like 'E5*') { 'Microsoft 365 E5, E7 or the Purview suite add-on' } else { 'Microsoft 365 Business Premium, E3 or F3 (also included in E5, E7 and the Purview suite add-on)' } }
+    $licTag = { param($n) if ("$n" -like 'E5*') { "License needed: Microsoft 365 E5, E7 or the Purview suite add-on (policy tag 'E5')." } else { "License needed: Microsoft 365 Business Premium, E3 or F3, or higher (policy tag 'BP')." } }
     $lbl = 'https://purview.microsoft.com/informationprotection/labels'
     $lpL = 'https://purview.microsoft.com/informationprotection/labelpolicies'
     $dlpL = 'https://purview.microsoft.com/datalossprevention/policies'
@@ -2086,6 +2105,15 @@ function Step-Purview {
             elseif ($Equiv) { & $addRow $Grp $Setting "Not deployed. Your policy '$Equiv' already covers the same data" 'Matches the ALSO baseline' Info "$Why Deploying the ALSO policy as well would warn users twice, so it is not needed unless you want ALSO's exact settings." $Lnk $false }
             else { & $addRow $Grp $Setting 'Missing' 'Matches the ALSO baseline' Drift "$Why This item is not in your tenant yet. Enforce mode can deploy it." $Lnk $true }
         }
+        $g0 = 'License check for Purview'
+        $licText = @{ E5 = 'Full: Microsoft 365 E5, E7 or the Purview suite add-on'; BP = 'Limited: Microsoft 365 Business Premium, E3 or F3'; None = 'No license that includes the Purview baseline' }[$pvTier]
+        $licWhy = @{
+            E5   = 'All baseline items apply: the items named BP-ALSO and the items named E5-PS-ALSO (Endpoint DLP and the Copilot protection).'
+            BP   = 'The items named BP-ALSO apply (labels, label policy, Exchange and SharePoint/OneDrive DLP, optional retention). The items named E5-PS-ALSO (Endpoint DLP and the Copilot protection) are skipped, because they need Microsoft 365 E5, E7 or the Purview suite add-on.'
+            None = 'No baseline item is deployed. The Purview baseline needs at least Microsoft 365 Business Premium, E3 or F3. Items you already have are still listed for review.'
+        }[$pvTier]
+        & $addRow $g0 'Purview license level' "$licText`nLicenses found: $pvSkus" 'Decides which baseline items apply' Info "$licWhy ALSO's Purview baseline uses the policy name to show the license it needs: BP = Business Premium, E3, F3; E5 = Microsoft 365 E5, E7 or the Purview suite add-on." 'https://admin.microsoft.com/#/licenses' $false
+        $noLic = { param($g, $setting, $n, $lnk, $what) & $addRow $g $setting 'Not deployed: not included in your licenses' "Requires $(& $licNeed $n)" Skipped "$what It is skipped because your tenant has no license that includes it." $lnk $false }
         $g1 = 'Tenant settings'
         $WarningPreference = 'SilentlyContinue'
         $au = $script:Results | Where-Object { $_.Step -eq 'AuditLog' } | Select-Object -Last 1
@@ -2120,15 +2148,21 @@ function Step-Purview {
             $labels | Where-Object { ($_.Name -eq $c.Name -or $_.DisplayName -eq $c.DisplayName -or ($c.BuiltInName -and ($_.Name -eq "$($c.BuiltInName)" -or $_.Name -eq "$($c.BuiltInName)Group"))) -and $(if ($parent) { "$($_.ParentId)" -eq "$($parent.Guid)" } else { -not $_.ParentId }) } | Select-Object -First 1 }
         $resolved = @{}
         $baseNames = @()
+        $lblRec = { param($c, $found)
+            $t = "ALSO recommends this label: $($c.Tooltip) Encryption: $(& $yn $c.Encrypt). Footer or watermark on documents: $(& $yn $c.ContentMark)."
+            if ($found -and "$($found.DisplayName)" -ne "$($c.DisplayName)") { $t += " In your tenant it is named '$($found.DisplayName)'; it is the same Microsoft built-in label, so it counts as the baseline label." }
+            "$t $(& $licTag 'BP')" }
+        $cfgDisp = @{}
+        foreach ($c in $config.Labels) { $cfgDisp[$c.Name] = "$($c.DisplayName)"; foreach ($s in @($c.SubLabels | Where-Object { $_ })) { $cfgDisp[$s.Name] = "$($c.DisplayName) > $($s.DisplayName)" } }
         if ($labels.Count -or $true) {
             foreach ($c in $config.Labels) {
-                $p = & $find $c $null; $resolved[$c.Name] = $p; $baseNames += $c.DisplayName
+                $p = & $find $c $null; $resolved[$c.Name] = $p; $baseNames += $c.DisplayName; if ($p) { $baseNames += "$($p.DisplayName)" }
                 $d = @(); if ($p -and $null -ne $p.EncryptionEnabled -and [bool]$p.EncryptionEnabled -ne [bool]$c.Encrypt) { $d += "encryption is $(& $yn $p.EncryptionEnabled), baseline expects $(& $yn $c.Encrypt)" }
-                & $emit $g2 "Label: $($c.DisplayName)" ([bool]$p) $d 'Sensitivity labels classify documents and e-mail so protection follows the data.' $lbl $null
+                & $emit $g2 "Label: $($c.DisplayName)" ([bool]$p) $d (& $lblRec $c $p) $lbl $null
                 foreach ($s in @($c.SubLabels | Where-Object { $_ })) {
                     $sl = & $find $s $p; $resolved[$s.Name] = $sl
                     $d = @(); if ($sl -and $null -ne $sl.EncryptionEnabled -and [bool]$sl.EncryptionEnabled -ne [bool]$s.Encrypt) { $d += "encryption is $(& $yn $sl.EncryptionEnabled), baseline expects $(& $yn $s.Encrypt)" }
-                    & $emit $g2 "Sub-label: $($c.DisplayName) > $($s.DisplayName)" ([bool]$sl) $d 'Sub-labels give the same classification different protection, for example encryption for specific people.' $lbl $null
+                    & $emit $g2 "Sub-label: $($c.DisplayName) > $($s.DisplayName)" ([bool]$sl) $d (& $lblRec $s $sl) $lbl $null
                 }
             }
             foreach ($x in @($labels | Where-Object { -not $_.ParentId -and $_.DisplayName -notin $baseNames })) {
@@ -2137,6 +2171,13 @@ function Step-Purview {
                 $wasEnc = if ($null -ne $x.EncryptionEnabled) { "Encryption: $(& $yn $x.EncryptionEnabled)." } else { '' }
                 if ($sim.Count) { & $addRow $g2x "Label: $($x.DisplayName)" "Possible duplicate of the ALSO label:`n$(($sim | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "This label exists in your tenant but is not the ALSO label. $wasEnc It has $subN sub-label(s). Two label sets with similar names confuse users: decide whether to keep yours, rename it or retire it before deploying the ALSO labels." $lbl $false }
                 else { & $addRow $g2x "Label: $($x.DisplayName)" 'Exists, not part of the ALSO baseline' 'Reviewed by you' Info "Your own label. $wasEnc It has $subN sub-label(s). It is never changed by this script." $lbl $false }
+            }
+            $baseGuids = @($resolved.Values | Where-Object { $_ } | ForEach-Object { "$($_.Guid)" })
+            foreach ($c in $config.Labels) {
+                $p = $resolved[$c.Name]; if (-not $p) { continue }
+                foreach ($x in @($labels | Where-Object { "$($_.ParentId)" -eq "$($p.Guid)" -and "$($_.Guid)" -notin $baseGuids })) {
+                    & $addRow $g2x "Sub-label: $($p.DisplayName) > $($x.DisplayName)" 'Exists, not part of the ALSO baseline' 'Reviewed by you' Info "Your own sub-label under the baseline label '$($p.DisplayName)'. It is never changed by this script, but it takes a place in the label order under that label. Rename or remove it in the Purview portal if you do not need it." $lbl $false
+                }
             }
         }
 
@@ -2155,9 +2196,13 @@ function Step-Purview {
                 $dj = Get-PvSetting $lp 'requiredowngradejustification'; if ($null -ne $dj -and (& $isTrue $dj) -ne [bool]$c.DowngradeJustification) { $d += "downgrade justification is $(& $yn (& $isTrue $dj)), baseline expects $(& $yn $c.DowngradeJustification)" }
                 $dl = $resolved[$c.DefaultLabel]; $cur = Get-PvSetting $lp 'defaultlabelid'
                 if ($dl -and $cur -and "$cur" -ne "$($dl.Guid)" -and "$cur" -ne "$($dl.Name)") { $d += "default label for documents is not '$($dl.DisplayName)'" }
+                $dle = $resolved[$c.DefaultLabelForEmail]; $curE = Get-PvSetting $lp 'outlookdefaultlabel'
+                if ($dle -and $curE -and "$curE" -ne "$($dle.Guid)" -and "$curE" -ne "$($dle.Name)") { $d += "default label for e-mail is not '$($dle.DisplayName)'" }
                 if ($lp.Enabled -eq $false) { $d += 'the policy is switched off' }
             }
-            & $emit $g3 "Label policy: $($c.Name)" ([bool]$lp) $d 'Publishes the four baseline labels, requires a label on documents and sets the default labels.' $lpL $null
+            $pubTxt = (@($c.PublishedLabels | ForEach-Object { if ($cfgDisp[$_]) { $cfgDisp[$_] } else { $_ } }) -join '; ')
+            $defTxt = "Default label for documents: $(if ($cfgDisp[$c.DefaultLabel]) { $cfgDisp[$c.DefaultLabel] } else { $c.DefaultLabel }). Default label for e-mail: $(if ($cfgDisp[$c.DefaultLabelForEmail]) { $cfgDisp[$c.DefaultLabelForEmail] } else { $c.DefaultLabelForEmail })."
+            & $emit $g3 "Label policy: $($c.Name)" ([bool]$lp) $d "ALSO recommends one label policy for all users that publishes these labels: $pubTxt. $defTxt Users must label documents (required labeling: $(& $yn $c.MandatoryLabelling)) and must give a reason when they lower a label (downgrade justification: $(& $yn $c.DowngradeJustification)). $(& $licTag $c.Name)" $lpL $null
             foreach ($o in @($lps | Where-Object { $_.Name -ne $c.Name })) {
                 $have = @($o.Labels | ForEach-Object { "$_" })
                 $shared = @($c.PublishedLabels | ForEach-Object { $resolved[$_] } | Where-Object { $_ -and ($have -contains "$($_.Guid)" -or $have -contains "$($_.Name)" -or $have -contains "$($_.DisplayName)") } | ForEach-Object { $_.DisplayName })
@@ -2172,11 +2217,9 @@ function Step-Purview {
         catch { & $addRow $g7 'Data loss prevention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $dlpL $false }
         $rulesOf = { param($n) $rules | Where-Object { "$($_.ParentPolicyName)" -eq $n -or "$($_.Policy)" -eq $n } }
         $sitJson = { param($r) if ($r) { ($r | ForEach-Object { $_.ContentContainsSensitiveInformation } | ConvertTo-Json -Depth 12 -Compress) } else { '' } }
-        $e5skip = { param($g, $n, $why) & $addRow $g $n 'Not licensed' 'Requires Microsoft 365 E5, E7 or the Purview suite' Skipped $why $dlpL $false }
-
         $g4 = 'ALSO baseline (suggested): DLP - protect labelled content'
         foreach ($c in $config.DlpPolicies) {
-            if ($c.Name -like 'E5-PS*' -and $tier -ne 'Full') { & $e5skip $g4 $c.Name 'Endpoint DLP needs Microsoft 365 E5, E7 or the Purview suite.'; continue }
+            if (-not (& $licOk $c.Name)) { & $noLic $g4 $c.Name $c.Name $dlpL $c.Comment; continue }
             $p = $dlp | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             $d = @()
             if ($p) {
@@ -2191,7 +2234,8 @@ function Step-Purview {
                 }
             }
             $cur = if ($p) { " Mode today: $(& $modeTxt $p)." } else { '' }
-            & $emit $g4 $c.Name ([bool]$p) $d "$($c.Comment)$cur" $dlpL $null
+            $modeNote = if ($config.DlpStartInSimulation) { ' New policies start in simulation mode, so nothing is blocked until you switch them on.' } else { '' }
+            & $emit $g4 $c.Name ([bool]$p) $d "ALSO recommends: $($c.Comment)$modeNote$cur $(& $licTag $c.Name)" $dlpL $null
         }
 
         $g5 = 'ALSO baseline (suggested): DLP - detect sensitive data types'
@@ -2219,16 +2263,18 @@ function Step-Purview {
                 }
             }
             $cur = if ($p) { " Mode today: $(& $modeTxt $p)." } else { '' }
-            & $emit $g5 $c.Name ([bool]$p) $d "$($c.Comment -replace ' Created by .*$', '')$cur" $dlpL $equiv
+            $sitTxt = if ($need.Count) { " It looks for: $($need -join ', ')." } else { '' }
+            & $emit $g5 $c.Name ([bool]$p) $d "ALSO recommends: $($c.Comment -replace ' Created by .*$', '')$sitTxt It blocks sending this data to people outside your organization; new policies start in simulation mode.$cur $(& $licTag $c.Name)" $dlpL $equiv
         }
 
         $g6 = 'ALSO baseline (suggested): AI protection'
         foreach ($c in $config.AIGovernance.DlpPolicies) {
-            if ($tier -ne 'Full') { & $e5skip $g6 $c.Name 'Blocking Copilot from labelled content needs Microsoft 365 E5, E7 or the Purview suite.'; continue }
+            if (-not (& $licOk $c.Name)) { & $noLic $g6 $c.Name $c.Name $dlpL $c.Comment; continue }
             $p = $dlp | Where-Object { $_.Name -eq $c.Name } | Select-Object -First 1
             $d = @(); if ($p -and "$($p.Mode)" -eq 'Disable') { $d += 'the policy is switched off' }
+            elseif ($p -and $c.Mode -and "$($p.Mode)" -ne "$($c.Mode)") { $d += "mode is $(& $modeTxt $p), baseline expects On" }
             if ($p -and -not (& $rulesOf $c.Name)) { $d += 'the policy rule is missing' }
-            & $emit $g6 $c.Name ([bool]$p) $d $c.Comment $dlpL $null
+            & $emit $g6 $c.Name ([bool]$p) $d "$($c.Comment) $(& $licTag $c.Name)" $dlpL $null
         }
 
         $g7 = 'Your existing tenant: DLP policies'
@@ -2236,7 +2282,12 @@ function Step-Purview {
             $j = & $sitJson (& $rulesOf $o.Name)
             $where = @(if (@($o.ExchangeLocation).Count) { 'Exchange' }; if (@($o.SharePointLocation).Count) { 'SharePoint' }; if (@($o.OneDriveLocation).Count) { 'OneDrive' }; if (@($o.EndpointDlpLocation).Count) { 'Endpoint devices' }; if (@($o.TeamsLocation).Count) { 'Teams' }) -join ', '
             $facts = "Mode: $(& $modeTxt $o)." + $(if ($where) { " Applies to: $where." } else { '' })
-            & $addRow $g7 "DLP policy: $($o.Name)" 'Existing policy' 'Reviewed by you' Info "$facts This policy already exists in your tenant and is not changed by this script. Review it and check that it does not overlap with the ALSO baseline DLP policies, otherwise users may be warned or blocked twice." $dlpL $false
+            $ov = @()
+            foreach ($b in $config.SitDlpPolicies) { $hit = @($sitNames[$b.Name] | Where-Object { $_ -and $j -match [regex]::Escape($_) }); if ($hit.Count) { $ov += "$($b.Name) (both look for: $($hit -join ', '))" } }
+            $lg = @($config.DlpPolicies | ForEach-Object { $_.LabelPaths } | ForEach-Object { ("$_" -split '/')[-1] } | Select-Object -Unique | ForEach-Object { $resolved[$_] } | Where-Object { $_ } | ForEach-Object { "$($_.Guid)" })
+            if ($j -and @($lg | Where-Object { $j -match [regex]::Escape($_) }).Count) { $ov += 'The ALSO DLP policies for labelled content (it uses the same Confidential / Highly Confidential labels)' }
+            if ($ov.Count) { & $addRow $g7 "DLP policy: $($o.Name)" "Overlaps with the ALSO baseline:`n$(($ov | ForEach-Object { '- ' + $_ }) -join "`n")" 'Reviewed by you' Manual "$facts This is your own policy and it is never changed by this script. It was compared with the ALSO baseline and acts on the same data as the baseline policies listed. If both are switched on, users can be warned or blocked twice: decide which one to keep." $dlpL $false }
+            else { & $addRow $g7 "DLP policy: $($o.Name)" 'Your own policy, no overlap with the ALSO baseline found' 'Reviewed by you' Info "$facts This is your own policy and it is never changed by this script. It was compared with the ALSO baseline: it does not look for the same sensitive data types or labels." $dlpL $false }
         }
 
         $g8 = 'ALSO baseline (suggested): Retention (optional)'; $g8x = 'Your existing tenant: Retention policies'
@@ -2252,7 +2303,12 @@ function Step-Purview {
                 & $emit $g8 "Optional: $($c.Name)" $true $d 'Keeps Exchange mail for seven years and then deletes it. Optional, only after legal review.' $retL $null
             }
             else { & $addRow $g8 "Optional: $($c.Name)" 'Not deployed' 'Only after legal review' Info 'Keeps Exchange mail for seven years and then deletes it. It is optional and must be approved by legal and compliance first. Enforce mode asks separately.' $retL $false }
-            foreach ($o in @($ret | Where-Object { $_.Name -ne $c.Name })) { & $addRow $g8x "Your retention policy: $($o.Name)" "$(if ($o.Enabled -eq $false) { 'Off' } else { 'On' })" 'Reviewed' Info 'Retention decides how long data is kept or deleted. Make sure it matches your legal requirements.' $retL $false }
+            foreach ($o in @($ret | Where-Object { $_.Name -ne $c.Name })) {
+                $has = { param($v) [bool]@($v | Where-Object { $_ }).Count }
+                $rw = @(if (& $has $o.ExchangeLocation) { 'Exchange mail' }; if (& $has $o.SharePointLocation) { 'SharePoint' }; if (& $has $o.OneDriveLocation) { 'OneDrive' }; if ((& $has $o.TeamsChannelLocation) -or (& $has $o.TeamsChatLocation)) { 'Teams' }; if (& $has $o.ModernGroupLocation) { 'Microsoft 365 groups' }) -join ', '
+                $same = if (& $has $o.ExchangeLocation) { " It covers Exchange mail, the same data as the optional ALSO policy '$($c.Name)' (keep $([int]($c.DurationDays / 365)) years, then delete). When two retention policies cover the same mail, Microsoft keeps the data for the longest period: check that this is what you want before adding the ALSO policy." } else { ' It does not cover Exchange mail, so it does not overlap with the optional ALSO retention policy.' }
+                & $addRow $g8x "Your retention policy: $($o.Name)" "$(if ($o.Enabled -eq $false) { 'Off' } else { 'On' })$(if ($rw) { ". Applies to: $rw" })" 'Reviewed by you' Info "This is your own policy and it is never changed by this script.$same Make sure it matches your legal requirements." $retL $false
+            }
         }
         catch { & $addRow $g8 'Retention policies' "Could not be read: $($_.Exception.Message)" 'Readable' Error $null '' $retL $false }
 
@@ -2266,6 +2322,15 @@ function Step-Purview {
             Write-Host "   ...reading $($x.N)" -ForegroundColor DarkGray
             try { $cc = @(Invoke-Timed $x.C 40); & $addRow $g9 $x.N $(if ($cc.Count) { "$($cc.Count): $(($cc | ForEach-Object { $_.Name }) -join '; ')" } else { 'None' }) 'Considered for your organization' Info $x.D $x.L $false }
             catch { & $addRow $g9 $x.N 'Not available in this tenant or not readable' 'Considered for your organization' Info $x.D $x.L $false }
+        }
+        if ($pvTier -eq 'None') {
+            foreach ($r in $rows) {
+                $opt = $r.Setting -like 'Optional: *' -and $r.Current -eq 'Not deployed'
+                if (-not ($r.Deployable -or $opt)) { continue }
+                $r.Deployable = $false; $r.Status = 'Skipped'; $r.Expected = "Requires $(& $licNeed 'BP')"
+                if ($r.Current -in 'Missing', 'Not deployed') { $r.Current = 'Not deployed: not included in your licenses' }
+                $r.Detail = ("$($r.Detail)" -replace ' (This item is not in your tenant yet\. )?Enforce mode can [^.]*\.', '') + ' It is skipped because your tenant has no license that includes it.'
+            }
         }
         $i = 0
         @($rows | ForEach-Object { $k = if ($_.Group -like 'Your existing*') { 2 } else { 1 }; [pscustomobject]@{ K = $k; I = $i++; R = $_ } } | Sort-Object K, I | ForEach-Object { $_.R })
@@ -2308,8 +2373,6 @@ function Step-Purview {
         }
     }
     $todo = @($first | Where-Object { $_.Status -eq 'Drift' -and $_.Deployable })
-    $topRows = @($first | Where-Object { $_.Setting -match '^Label: ' -and $_.Expected -eq 'Matches the ALSO baseline' })
-    $skipOrder = $topRows.Count -gt 0 -and -not @($topRows | Where-Object { $_.Current -eq 'Missing' }).Count
     $final = $first
     $deployed = $false
     $retRow = @($first | Where-Object { $_.Setting -like 'Optional: BP-ALSO*' -and $_.Status -eq 'Info' })
@@ -2322,10 +2385,11 @@ function Step-Purview {
             $existing = @($todo | Where-Object { $_.Current -like 'Exists*' })
             $go = $false; $adopt = $false; $doRet = $false; $partKeys = @()
             if ($todo.Count) {
-                $partOf = { param($g) if ($g -match 'Sensitivity labels|Label policy') { 'labels' } elseif ($g -match 'protect labelled') { 'dlp' } elseif ($g -match 'sensitive data types') { 'sit' } elseif ($g -match 'AI protection') { 'ai' } else { 'other' } }
-                $partNames = @{ labels = 'Sensitivity labels and label policy'; dlp = 'DLP policies for labelled content'; sit = 'DLP policies for sensitive data types'; ai = 'AI protection (block Copilot on Highly Confidential content)' }
+                # Parts follow the toolkit's own stages: labels, DLP (label based and sensitive data types together) and AI governance.
+                $partOf = { param($g) if ($g -match 'Sensitivity labels|Label policy') { 'labels' } elseif ($g -match 'protect labelled|sensitive data types') { 'dlp' } elseif ($g -match 'AI protection') { 'ai' } else { 'other' } }
+                $partNames = @{ labels = 'Sensitivity labels and label policy'; dlp = 'DLP policies (labelled content and sensitive data types)'; ai = 'AI protection (block Copilot on Highly Confidential content)' }
                 $parts = @()
-                foreach ($k in 'labels', 'dlp', 'sit', 'ai') {
+                foreach ($k in 'labels', 'dlp', 'ai') {
                     $inPart = @($todo | Where-Object { (& $partOf $_.Group) -eq $k })
                     if ($inPart.Count) { $parts += [pscustomobject]@{ Key = $k; Name = $partNames[$k]; Items = $inPart } }
                 }
@@ -2341,29 +2405,19 @@ function Step-Purview {
                 [IO.File]::WriteAllText($cfgOut, (ConvertTo-Psd1 $config), (New-Object Text.UTF8Encoding($false)))
                 $dArgs = @('-NoProfile', '-File', (Join-Path $tk 'Purview\Deploy-PurviewBestPractice.ps1'), '-TenantAdminUpn', $script:MeUpn, '-SharePointAdminUrl', $SharePointAdminUrl, '-ConfigPath', $cfgOut, '-SkipTenantSettings', '-NoLicenseAutoDetect', '-AutoInstallModules', '-NoReport')
                 if (-not ($go -and $partKeys -contains 'labels')) { $dArgs += '-SkipLabels' }
-                if (-not ($go -and ($partKeys -contains 'dlp' -or $partKeys -contains 'sit'))) { $dArgs += '-SkipDLP' }
-                if (-not ($go -and $partKeys -contains 'ai' -and $tier -eq 'Full')) { $dArgs += '-SkipAIControls' }
+                if (-not ($go -and $partKeys -contains 'dlp')) { $dArgs += '-SkipDLP' }
+                if (-not ($go -and $partKeys -contains 'ai' -and $pvTier -eq 'E5')) { $dArgs += '-SkipAIControls' }
                 if ($doRet) { $dArgs += '-ApplyRetention' }
                 if ($adopt) { $dArgs += '-AdoptExisting' }
-                if ($tier -ne 'Full') { $dArgs += '-BPOnly' }
-                Write-Host '   Deploying your Purview selection. You may be asked to sign in to Exchange, Purview and SharePoint, and label changes can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
-                $orderSkipped = $skipOrder -and ($dArgs -notcontains '-SkipLabels')
-                if ($orderSkipped) {
-                    $env:SBD_SKIP_LABEL_ORDER = '1'
-                    Add-Result 'Purview' 'Sensitivity label order' 'Left as-is (labels already existed)' 'Labels in ALSO order' Manual 'https://purview.microsoft.com/informationprotection/labels' 'Your tenant already had the baseline labels, so the script did not reorder them. Reordering is the slowest Purview step because Microsoft answers very slowly there. In the Purview portal (Information protection > Sensitivity labels) check that the order is Public, General, Confidential, Highly Confidential, with each sub-label directly under its parent.' $doc $docText
-                }
+                if ($pvTier -ne 'E5') { $dArgs += '-BPOnly' }
+                Write-Host '   Deploying your Purview selection with ALSO''s Purview toolkit, unchanged. You may be asked to sign in to Exchange, Purview and SharePoint. Setting the label order is the slowest part and can take 15 minutes or more without new lines; the script is not stuck. If the toolkit asks a question, it is shown in yellow: answer it to continue.' -ForegroundColor Cyan
                 try {
-                    $res = Invoke-PvChild $dArgs 900
-                    if ($res.TimedOut -and -not $orderSkipped -and ($dArgs -notcontains '-SkipLabels') -and ($res.LastLine -match 'label|priority')) {
-                        Add-Result 'Purview' 'Sensitivity label order' 'Microsoft did not answer while the label order was being set' 'Labels in ALSO order' Manual $repo 'The labels themselves were created or found. Setting their order stalled on the Microsoft side. The script continues with the other Purview parts now. In the Purview portal (Information protection > Labels) check the label order, or run the script again later.' $doc $docText
-                        Write-Host '   Continuing with the remaining Purview parts (without the label step)...' -ForegroundColor Cyan
-                        $res = Invoke-PvChild ($dArgs + '-SkipLabels') 900
-                    }
-                    if ($res.TimedOut) { Add-Result 'Purview' 'Deploying the Purview baseline' "Microsoft stopped answering. Last step: $($res.LastLine)" 'Deployed' Error $repo 'The Purview script was stopped after 15 minutes without progress. Run the script again later; completed parts are not repeated.' $doc $docText }
+                    $res = Invoke-PvChild $dArgs 1800
+                    if ($res.TimedOut) { Add-Result 'Purview' 'Deploying the Purview baseline' "Microsoft stopped answering. Last step: $($res.LastLine)" 'Deployed' Error $repo 'ALSO''s Purview toolkit was stopped after 30 minutes without any progress. Run the script again later; completed parts are not repeated.' $doc $docText }
                     elseif ($res.Code -ne 0) { Add-Result 'Purview' 'Deploying the Purview baseline' "ALSO's Purview script stopped (exit code $($res.Code))" 'Deployed' Error $repo 'See the console output above for the reason. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText }
                 }
                 catch { Add-Result 'Purview' 'Deploying the Purview baseline' $_.Exception.Message 'Deployed' Error $repo 'ALSO''s Purview script could not be started or stopped with an error. Run the script again after fixing the cause.' $doc $docText }
-                finally { Remove-Item $cfgOut -Force -ErrorAction SilentlyContinue; Remove-Item Env:\SBD_SKIP_LABEL_ORDER -ErrorAction SilentlyContinue }
+                finally { Remove-Item $cfgOut -Force -ErrorAction SilentlyContinue }
                 $deployed = $true
                 Write-Host '   Reading the tenant again to verify the result...' -ForegroundColor Cyan
                 Clear-PvCache
@@ -2390,7 +2444,7 @@ function Step-Purview {
     $sim = @($final | Where-Object { $_.Current -match '^Matches' -and $_.Detail -match 'Mode today: Simulation' } | ForEach-Object { $_.Setting })
     Set-Group 'Summary'
     $verdict = if ($badN -eq 0) { 'Everything in the ALSO baseline that applies to your licenses is in place.' } elseif ($Mode -eq 'Enforce') { "$badN item(s) are still missing or different." } else { "$badN item(s) are missing or different. Run the script in Enforce mode to deploy them." }
-    Add-Result 'Purview' 'Purview baseline overview' "$okN of $($base.Count) baseline items match" 'All items match' $(if ($badN) { 'Info' } else { 'Compliant' }) 'https://purview.microsoft.com' "$verdict Each policy below is compared setting by setting with ALSO's baseline file. 'Matches' means your policy has the baseline settings. 'Differs' lists exactly what is different. Your own policies are listed for review only and are never changed." $doc $docText
+    Add-Result 'Purview' 'Purview baseline overview' "$okN of $($base.Count) baseline items match" 'All items match' $(if ($badN) { 'Info' } else { 'Compliant' }) 'https://purview.microsoft.com' "$verdict Each policy below is compared setting by setting with ALSO's baseline file. 'Matches' means your policy has the baseline settings. 'Differs' lists exactly what is different. Items that your licenses do not include are marked Skipped and are not counted. Your own labels and policies are compared with the baseline for overlap, listed for review only and never changed." $doc $docText
     $sum = $script:Results[$script:Results.Count - 1]; $script:Results.RemoveAt($script:Results.Count - 1); $sum.Group = '0. Summary'; $script:Results.Insert($start, $sum)
 
     Set-Group 'To do by a person'
@@ -2634,8 +2688,23 @@ function Step-WipeBreakGlass {    Write-Step 'Remove emergency access accounts' 
     } $link 'Accounts are deleted permanently so the same names can be created again. The group is removed first, then the accounts. Only the accounts and group that this script created are removed (matched by the exact names, the marker or the group).'
 }
 
+function Get-EnforceHistory {
+    # What Enforce changed earlier in this tenant and the value each setting had before, read from the saved Enforce reports.
+    $h = @{}
+    foreach ($f in @(Get-ChildItem $OutputPath -Filter 'sbd-Enforce-*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        try { $rows = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { continue }
+        foreach ($r in @($rows | ForEach-Object { $_ })) {
+            if ("$($r.Status)" -ne 'Fixed') { continue }
+            if ($r.PSObject.Properties['Tenant'] -and $r.Tenant -and "$($r.Tenant)" -ne "$initialDomain") { continue }
+            $k = "$($r.Step)|$($r.Setting)"
+            if (-not $h.ContainsKey($k)) { $h[$k] = $r }
+        }
+    }
+    $h
+}
+
 function Step-WipeTenantSettings {
-    Write-Step 'Set tenant-wide settings back to Microsoft defaults' 'Only settings that currently differ from the Microsoft default are listed. Nothing is changed until you choose.'
+    Write-Step 'Set tenant-wide settings back' 'Lists settings that differ from the Microsoft default, and settings that an earlier Enforce run changed (taken from the saved Enforce reports, with the value they had before). Nothing is changed until you choose.'
     Set-Group 'Tenant-wide settings'
     $items = New-Object System.Collections.ArrayList
     $add = {
@@ -2718,6 +2787,122 @@ function Step-WipeTenantSettings {
         if ($lcPol -and $lcPol.isEnabled -eq $true) { & $add 'Consent' 'Default Agent Identity inactivity lifecycle policy: from Enabled to Disabled' { Graph PATCH "$lpUri/$($lcPol.id)" @{ '@odata.type' = "$($lcPol.'@odata.type')"; isEnabled = $false } | Out-Null } }
     }
     catch { Write-Host "   A tenant setting could not be read, so it is not listed: $($_.Exception.Message)" -ForegroundColor Yellow }
+    $warnRead = { param($what, $e) Write-Host "   $what could not be read, so it is not listed: $($e.Exception.Message)" -ForegroundColor Yellow }
+    try {
+        $buri = 'https://graph.microsoft.com/beta/policies/authorizationPolicy'; $beta = Graph GET $buri; $bPatch = $buri
+        if ($beta.value) { $beta = @($beta.value)[0]; $bPatch = "$buri/$($beta.id)" }
+        $bProp = @($beta.defaultUserRolePermissions.Keys) | Where-Object { $_ -match 'agentIdentityBlueprint' } | Select-Object -First 1
+        if ($bProp -and $beta.defaultUserRolePermissions[$bProp] -eq $false) { & $add 'UserSettings' 'Users can register agent identity blueprints: from No to Yes' { Graph PATCH $bPatch @{ defaultUserRolePermissions = @{ $bProp = $true } } | Out-Null } }
+    }
+    catch { & $warnRead 'The agent identity blueprint setting' $_ }
+
+    # Settings without a safe Microsoft default: only offered when a saved Enforce report shows that Enforce changed them, and set back to the value they had before.
+    $hist = Get-EnforceHistory
+    $pre = ' (the value before Enforce changed it)'
+    $lit = { param($s) "'" + ("$s" -replace "'", "''") + "'" }
+    if ($hist.Count) {
+        try {
+            $sp2 = 'https://graph.microsoft.com/v1.0/admin/sharepoint/settings'; $t2 = Graph GET $sp2
+            $r = $hist['SharePoint|Guests must sign in with the account that was invited']
+            if ($r -and "$($r.Current)" -eq 'No' -and $t2.isRequireAcceptingUserToMatchInvitedUserEnabled -eq $true) { & $add 'SharePoint' "Guests must sign in with the account that was invited: from Yes to No$pre" { Graph PATCH $sp2 @{ isRequireAcceptingUserToMatchInvitedUserEnabled = $false } | Out-Null } }
+            $r = $hist['SharePoint|Legacy authentication protocols']
+            if ($r -and "$($r.Current)" -eq 'Allowed' -and $t2.isLegacyAuthProtocolsEnabled -eq $false) { & $add 'SharePoint' "Legacy authentication protocols in SharePoint: from Blocked to Allowed$pre" { Graph PATCH $sp2 @{ isLegacyAuthProtocolsEnabled = $true } | Out-Null } }
+        }
+        catch { & $warnRead 'The SharePoint settings' $_ }
+        try {
+            $amBase = 'https://graph.microsoft.com/v1.0/policies/authenticationMethodsPolicy'
+            $amIds = @{ 'Passkey (FIDO2)' = 'Fido2'; 'Microsoft Authenticator' = 'MicrosoftAuthenticator'; 'SMS' = 'Sms'; 'Temporary Access Pass' = 'TemporaryAccessPass'; 'Voice call' = 'Voice'; 'Email OTP' = 'Email' }
+            $amKeys = @($hist.Keys | Where-Object { $_ -match '^(Fido2|AuthMethods)\|' })
+            if ($amKeys.Count) {
+                $amLive = @((Graph GET $amBase).authenticationMethodConfigurations); $amSeen = @{}
+                foreach ($k in $amKeys) {
+                    $r = $hist[$k]; $id = $amIds["$($r.Setting)"]; if (-not $id -or $amSeen[$id]) { continue }
+                    $m = $amLive | Where-Object { $_.id -eq $id } | Select-Object -First 1
+                    $was = "$($r.Current)".ToLower(); if (-not $m -or $was -notin 'enabled', 'disabled' -or "$($m.state)" -eq $was) { continue }
+                    $amSeen[$id] = $true
+                    $do = [scriptblock]::Create("Graph PATCH $(& $lit "$amBase/authenticationMethodConfigurations/$id") @{ '@odata.type' = $(& $lit $m.'@odata.type'); state = $(& $lit $was) } | Out-Null")
+                    & $add $r.Step "Sign-in method $($r.Setting): from $(Cap $m.state) to $(Cap $was)$pre" $do
+                }
+            }
+        }
+        catch { & $warnRead 'The authentication methods' $_ }
+        try {
+            $sdUri = 'https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy'
+            if ($hist['SecurityDefaults|Security defaults'] -and (Graph GET $sdUri).isEnabled -eq $true) { & $add 'SecurityDefaults' "Security defaults: from On to Off$pre" { Graph PATCH $sdUri @{ isEnabled = $false } | Out-Null } }
+        }
+        catch { & $warnRead 'Security defaults' $_ }
+        $r = $hist['AuditLog|UnifiedAuditLogIngestionEnabled']
+        if ($r -and "$($r.Current)" -eq 'False') { & $add 'AuditLog' "Unified audit log: from On to Off$pre" { Initialize-Module ExchangeOnlineManagement; Connect-ExoNow; Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $false -ErrorAction Stop } }
+        foreach ($k in @($hist.Keys | Where-Object { $_ -like 'MdoPresets|*' })) {
+            $r = $hist[$k]; if ("$($r.Current)" -ne 'Disabled' -or "$($r.Setting)" -notmatch '^(Exchange Online Protection|Defender for Office 365) - (.+)$') { continue }
+            $kind = if ($Matches[1] -like 'Exchange*') { 'EOP' } else { 'ATP' }
+            $do = [scriptblock]::Create("Initialize-Module ExchangeOnlineManagement; Connect-ExoNow; Disable-${kind}ProtectionPolicyRule -Identity $(& $lit $Matches[2]) -Confirm:`$false -ErrorAction Stop")
+            & $add 'MdoPresets' "$($r.Setting): from Enabled to Disabled$pre" $do
+        }
+        try {
+            $mdeUri = 'https://graph.microsoft.com/beta/deviceManagement/mobileThreatDefenseConnectors/fc780465-2017-40d4-a0c5-307022471b92'
+            $rA = $hist['DefenderEndpoint|Allow Microsoft Defender for Endpoint to enforce Endpoint Security Configurations']; $rR = $hist['DefenderEndpoint|Use Defender device risk in compliance policies']
+            if ($rA -or $rR) {
+                $cx = Graph GET $mdeUri
+                if ($rA -and $cx.microsoftDefenderForEndpointAttachEnabled -eq $true) { & $add 'DefenderEndpoint' "Defender for Endpoint may enforce Endpoint Security Configurations: from On to Off$pre" { Graph PATCH $mdeUri @{ microsoftDefenderForEndpointAttachEnabled = $false } | Out-Null } }
+                $platKeys = [ordered]@{ Windows = 'windowsEnabled'; macOS = 'macEnabled'; Android = 'androidEnabled'; iOS = 'iosEnabled' }
+                $offBefore = @($platKeys.Keys | Where-Object { $rR -and "$($rR.Current)" -match "\b$_\b" -and $cx.($platKeys[$_]) -eq $true })
+                if ($offBefore.Count) { & $add 'DefenderEndpoint' "Defender device risk in compliance policies ($($offBefore -join ', ')): from On to Off$pre" { $b = @{}; foreach ($pk in $offBefore) { $b[$platKeys[$pk]] = $false }; Graph PATCH $mdeUri $b | Out-Null } }
+            }
+        }
+        catch { & $warnRead 'The Defender for Endpoint connection settings' $_ }
+        if ('Purview' -in $Steps) {
+            try {
+                if ($hist['Purview|Sensitivity labels for Microsoft 365 groups, Teams and sites']) {
+                    $guUri = 'https://graph.microsoft.com/v1.0/groupSettings'
+                    $gu = @(Get-AllPages $guUri) | Where-Object { $_.displayName -eq 'Group.Unified' } | Select-Object -First 1
+                    if ($gu -and "$((@($gu.values) | Where-Object { $_.name -eq 'EnableMIPLabels' }).value)" -match '^true$') {
+                        & $add 'Purview' "Sensitivity labels for Microsoft 365 groups, Teams and sites: from On to Off$pre" {
+                            $vals = @(@($gu.values) | ForEach-Object { @{ name = $_.name; value = $(if ($_.name -eq 'EnableMIPLabels') { 'false' } else { "$($_.value)" }) } })
+                            Graph PATCH "$guUri/$($gu.id)" @{ values = $vals } | Out-Null }
+                    }
+                }
+            }
+            catch { & $warnRead 'The sensitivity label setting for groups' $_ }
+            foreach ($sn in 'Sensitivity labels in SharePoint and OneDrive', 'Sensitivity labels for PDF files') {
+                $r = $hist["Purview|$sn"]; if (-not $r -or "$($r.Current)" -ne 'Off') { continue }
+                $prop = if ($sn -like '*PDF*') { 'EnableSensitivityLabelforPDF' } else { 'EnableAIPIntegration' }
+                & $add 'Purview' "${sn}: from On to Off$pre" ([scriptblock]::Create("Connect-SpoLazy; Set-SpoTenantCsom '$prop' `$false"))
+            }
+        }
+        $azKeys = @($hist.Keys | Where-Object { $_ -like "PrivilegedAccess|Azure role '*" })
+        if ($azKeys.Count -and 'PrivilegedAccess' -in $Steps) {
+            try {
+                Write-Host '   SIGN-IN (Azure): an earlier Enforce run set the authentication context on Azure roles. A browser window opens to read those role settings; sign in with your Global Administrator account.' -ForegroundColor Yellow
+                $hdrA = @{ Authorization = "Bearer $(Get-ArmToken (Get-MgContext).TenantId)"; 'Content-Type' = 'application/json' }
+                $azR = [ordered]@{ 'Owner' = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'; 'User Access Administrator' = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'; 'Contributor' = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
+                foreach ($s in @((Invoke-RestMethod -Headers $hdrA -Uri 'https://management.azure.com/subscriptions?api-version=2022-12-01').value)) {
+                    if (-not ($azKeys | Where-Object { $_ -like "*in '$($s.displayName)':*" })) { continue }
+                    $asgA = @((Invoke-RestMethod -Headers $hdrA -Uri "https://management.azure.com/subscriptions/$($s.subscriptionId)/providers/Microsoft.Authorization/roleManagementPolicyAssignments?api-version=2020-10-01").value)
+                    foreach ($rn in $azR.Keys) {
+                        if (-not $hist.ContainsKey("PrivilegedAccess|Azure role '$rn' in '$($s.displayName)': authentication context required on activation")) { continue }
+                        $a = $asgA | Where-Object { "$($_.properties.roleDefinitionId)" -like "*$($azR[$rn])" } | Select-Object -First 1
+                        if (-not $a) { continue }
+                        $pU = "https://management.azure.com$($a.properties.policyId)?api-version=2020-10-01"
+                        $rl = @((Invoke-RestMethod -Headers $hdrA -Uri $pU).properties.effectiveRules)
+                        $ac = $rl | Where-Object { $_.id -eq 'AuthenticationContext_EndUser_Assignment' } | Select-Object -First 1
+                        if (-not ($ac.isEnabled -eq $true -and "$($ac.claimValue)" -eq 'c1')) { continue }
+                        $en = $rl | Where-Object { $_.id -eq 'Enablement_EndUser_Assignment' } | Select-Object -First 1
+                        $rulesA = (@(@($en.enabledRules) + 'MultiFactorAuthentication' | Where-Object { $_ } | Select-Object -Unique) | ForEach-Object { & $lit $_ }) -join ','
+                        $do = [scriptblock]::Create(@"
+`$tg = @{ caller = 'EndUser'; operations = @('All'); level = 'Assignment'; targetObjects = `$null; inheritableSettings = `$null; enforcedSettings = `$null }
+`$body = @{ properties = @{ rules = @(
+    @{ id = 'Enablement_EndUser_Assignment'; ruleType = 'RoleManagementPolicyEnablementRule'; enabledRules = [object[]]@($rulesA); target = `$tg },
+    @{ id = 'AuthenticationContext_EndUser_Assignment'; ruleType = 'RoleManagementPolicyAuthenticationContextRule'; isEnabled = `$false; claimValue = ''; target = `$tg }) } } | ConvertTo-Json -Depth 12
+Invoke-RestMethod -Method Patch -Headers `$hdrA -Uri $(& $lit $pU) -Body `$body | Out-Null
+"@)
+                        & $add 'PrivilegedAccess' "Azure role '$rn' in '$($s.displayName)' activation requirement: from authentication context to multifactor authentication$pre" $do
+                    }
+                }
+            }
+            catch { & $warnRead 'The Azure role settings' $_ }
+        }
+    }
     if ('Copilot' -in $Steps) {
         try {
             Initialize-Module MSCommerce
@@ -2758,12 +2943,12 @@ Graph PATCH '$pUri/Enablement_EndUser_Assignment' @{ '@odata.type' = '#microsoft
         }
         catch { Write-Host "   Entra role activation settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
     }
-    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
+    Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, or the value recorded in your Enforce report before the change. That is usually less strict, so choose one by one if you only want to undo some of them.'
 }
 function Invoke-Wipe {
     Write-Host ''
     Write-Host 'WIPE mode: removes what this script deployed (matched by the exact ALSO names and markers). Your own policies, groups and labels are never touched.' -ForegroundColor Yellow
-    Write-Host 'Tenant-wide settings (user settings, consent, SharePoint sharing, device and Intune enrollment settings) can be set back to Microsoft defaults; you choose which ones.' -ForegroundColor DarkGray
+    Write-Host 'Tenant-wide settings that Enforce changed can be set back; you choose which ones. Settings such as the audit log, passkeys, sign-in methods, security defaults, Defender and SharePoint label settings are offered when a saved Enforce report in the report folder shows what they were before.' -ForegroundColor DarkGray
     if (-not $Force -and -not $WhatIfPreference) {
         if ((Read-Host 'Type WIPE to continue, anything else cancels') -ne 'WIPE') { Write-Host 'Cancelled. Nothing was removed.' -ForegroundColor Green; exit 0 }
     }
@@ -2781,8 +2966,9 @@ function Invoke-Wipe {
         if ($s -eq 'TenantSettings' -or $s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
     if ('ConditionalAccess' -in $Steps) { Invoke-Safe 'ConditionalAccess' { Step-WipeAuthContexts } }
-    Write-Step 'Settings that are left as they are' 'Wipe never switches these off.'
-    Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults, the other authentication methods, the Defender settings, the Exchange Online protection presets and the authentication context on Azure roles stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
+    Write-Step 'What Wipe covers' 'How each part of Enforce is undone.'
+    $nRep = @(Get-ChildItem $OutputPath -Filter 'sbd-Enforce-*.json' -ErrorAction SilentlyContinue).Count
+    Add-Result 'GuideManual' 'Settings that need a saved Enforce report to be undone' $(if ($nRep) { "$nRep Enforce report(s) found in $OutputPath" } else { "No Enforce report found in $OutputPath" }) 'Enforce reports kept in the report folder' $(if ($nRep) { 'Info' } else { 'Manual' }) 'https://entra.microsoft.com' 'Wipe removes everything Enforce deploys: the emergency access accounts, group and restricted management unit, the Conditional Access policies, groups and authentication contexts, the Intune policies, the Purview labels and policies, and it sets the tenant-wide settings back. A few settings have no safe Microsoft default: the unified audit log, passkey (FIDO2) and the other sign-in methods, security defaults, the Exchange Online protection presets, the Defender for Endpoint connection settings, the SharePoint guest sign-in and legacy authentication settings, the sensitivity label settings for SharePoint, PDF and groups, and the authentication context on Azure roles. For these, Wipe reads your saved Enforce reports and offers to set each one back to the value it had before Enforce changed it. Without a saved report they are left as they are; change them in the portal if you want them off.'
 }
 
 $basicSkip = 'IntuneEnrollment', 'IntunePolicies', 'ConditionalAccess', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
@@ -2841,7 +3027,10 @@ $buildSections = {
         $grpOf = switch ($r.Status) { 'Drift' { 'todo' } 'Error' { 'todo' } 'Manual' { 'todo' } 'Compliant' { 'ok' } 'Fixed' { 'ok' } default { 'info' } }
         "<tr data-f='$grpOf'><td class='st'><span class='pill $($r.Status)'>$($label[$r.Status])</span></td><td><b>$(& $enc $r.Setting)</b>$chg$d</td><td>$(& $enc $r.Current)</td><td>$(& $enc $r.Expected)</td><td>$l</td></tr>"
     }
-    "<section><h2>$(& $enc $cat) $badge</h2><table><tr><th>State</th><th>Setting</th><th>Current value</th><th>Expected</th><th></th></tr>$($rows -join '')</table></section>"
+    $nOk = @($items | Where-Object { $_.Status -in 'Compliant', 'Fixed' }).Count; $nOther = $items.Count - $nOk - $bad
+    $cnt = if ($ManualOnly) { '' } else { "<span class='cnt'>$nOk OK &middot; $bad to fix &middot; $nOther for information</span>" }
+    $colCur = if ($Mode -eq 'Wipe') { 'Before' } else { 'Your tenant today' }; $colExp = if ($Mode -eq 'Wipe') { 'After Wipe' } else { 'Recommended' }
+    "<section><h2>$(& $enc $cat) $badge$cnt</h2><table><tr><th>State</th><th>Setting and explanation</th><th>$colCur</th><th>$colExp</th><th></th></tr>$($rows -join '')</table></section>"
     }
 }
 $autoSections = & $buildSections $false
@@ -2858,7 +3047,10 @@ $manualCount = @($reportResults | Where-Object Status -eq 'Manual').Count
 $autoCount = $total - $manualCount
 $tabs = "<div class='tabs'><button class='tab on' data-t='auto' onclick=""sw('auto')"">Automated checks and actions ($autoCount)</button><button class='tab' data-t='manual' onclick=""sw('manual')"">Manual checks and actions ($manualCount)</button></div>"
 $manualIntro = "<p class='intro'>These items cannot be read or changed automatically because Microsoft offers no API for them, or they need a person to decide. Work through them in the portal using the links and guides.</p>"
-$js = "function fl(f){document.querySelectorAll('.fl[data-f]').forEach(function(b){b.classList.toggle('on',b.dataset.f===f)});var shown=0;document.querySelectorAll('#auto section').forEach(function(s){var any=false,g=null,gv=false;s.querySelectorAll('tr[data-f]').forEach(function(r){if(r.dataset.f==='grp'){if(g){g.style.display=gv?'':'none'}g=r;gv=false;return}var v=f==='all'||r.dataset.f===f;r.style.display=v?'':'none';if(v){gv=true;any=true}});if(g){g.style.display=gv?'':'none'}s.style.display=any?'':'none';if(any){shown++}});document.getElementById('none').style.display=shown?'none':'block'}function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
+$js = "var cf='all';function fl(f){cf=f;document.querySelectorAll('.fl[data-f]').forEach(function(b){b.classList.toggle('on',b.dataset.f===f)});ap()}function ap(){var q=(document.getElementById('q').value||'').toLowerCase();['auto','manual'].forEach(function(id){var shown=0;document.querySelectorAll('#'+id+' section').forEach(function(s){var any=false,g=null,gv=false;s.querySelectorAll('tr[data-f]').forEach(function(r){if(r.dataset.f==='grp'){if(g){g.style.display=gv?'':'none'}g=r;gv=false;return}var v=(id==='manual'||cf==='all'||r.dataset.f===cf)&&(!q||r.textContent.toLowerCase().indexOf(q)>=0);r.style.display=v?'':'none';if(v){gv=true;any=true}});if(g){g.style.display=gv?'':'none'}s.style.display=any?'':'none';if(any){shown++}});document.getElementById('none-'+id).style.display=shown?'none':'block'})}function sw(t){document.querySelectorAll('.pane').forEach(function(e){e.style.display=e.id===t?'block':'none'});document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('on',b.dataset.t===t)})}"
+$legend = "<details class='legend'><summary>What do the states mean?</summary><ul><li><span class='pill Compliant'>Compliant</span> Your tenant matches the recommendation. Nothing to do.</li><li><span class='pill Fixed'>Fixed</span> Changed in this run. The row shows the value before and after.</li><li><span class='pill Drift'>Needs change</span> Differs from the recommendation. Enforce mode can change it after you approve.</li><li><span class='pill Manual'>Manual action</span> Needs a person: Microsoft offers no automation for it, or it is a decision for your organization.</li><li><span class='pill Info'>Info</span> Shown for your review. The script never changes it.</li><li><span class='pill Skipped'>Skipped</span> Not included in your licenses, or you chose not to apply it.</li><li><span class='pill Error'>Error</span> Could not be read or changed. The reason is in the row.</li></ul></details>"
+$tools = "<div class='tools'><input id='q' type='search' placeholder='Search all settings, for example: guest, DLP, passkey' oninput='ap()'></div>"
+$licLine = if ($script:LicenseInfo) { " &middot; License level: $(& $enc (@{ Full = 'Microsoft 365 E5 / E7, Defender or Purview suite'; Standard = 'Business Premium / E3 / F3'; Basic = 'Business Basic / Standard' }[$script:LicenseInfo.Tier]))" } else { '' }
 $css = @'
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fa;color:#1d2b3a}
 header{background:#fff;border-bottom:1px solid #dde3ea;padding:20px 40px}
@@ -2879,9 +3071,12 @@ td{white-space:pre-line;padding:9px 8px;border-bottom:1px solid #eef2f6;vertical
 .verdict{background:#fff;border:1px solid #dde3ea;border-left:6px solid #2e8b57;border-radius:10px;padding:4px 24px 14px;margin-bottom:22px}.verdict.bad{border-left-color:#d98e04}.verdict h3{margin:14px 0 4px}.verdict ol{margin:4px 0;padding-left:22px;line-height:1.6}.chg{margin-top:4px;font-size:.82rem;color:#7a5200}.filters{margin-bottom:14px;color:#5b6b7c}.fl{border:1px solid #c9d3dd;background:#fff;border-radius:16px;padding:4px 14px;margin-left:6px;cursor:pointer;font-size:.85rem}.fl.on{background:#00757d;color:#fff;border-color:#00757d}@media print{.tabs,.filters,.btn,.next{display:none}.pane{display:block!important}body{background:#fff}}
 .pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.78rem;font-weight:600;color:#fff;background:#9aa7b4}
 .pill.Compliant,.pill.Fixed{background:#2e8b57}.pill.Drift{background:#d98e04}.pill.Manual{background:#00757d}.pill.Error{background:#c0392b}
+.cnt{margin-left:auto;font-size:.8rem;font-weight:400;color:#5b6b7c}.tools{margin-bottom:14px}.tools input{width:100%;box-sizing:border-box;padding:10px 14px;border:1px solid #c9d3dd;border-radius:8px;font-size:.95rem}
+.legend{background:#fff;border:1px solid #dde3ea;border-radius:10px;padding:10px 18px;margin-bottom:20px;font-size:.88rem}.legend summary{cursor:pointer;font-weight:600;color:#00757d}.legend ul{list-style:none;padding:0;margin:10px 0 2px;line-height:2}.legend .pill{min-width:92px;text-align:center;margin-right:8px}
+tr:hover td{background:#fafcfd}tr.grp:hover td{background:#eef6f6}@media print{.tools,.legend summary{display:none}}
 section.run{border-left:6px solid #00757d}.rbs{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}.rb{border:1px solid #e6ebf0;border-radius:8px;padding:2px 14px 10px;border-top:4px solid #9aa7b4}.rb.Fixed{border-top-color:#2e8b57}.rb.Error{border-top-color:#c0392b}.rb.Drift{border-top-color:#d98e04}.rb.Manual{border-top-color:#00757d}.rb h3{font-size:1rem;margin:10px 0 4px}.rb ul{margin:4px 0;padding-left:20px;font-size:.88rem;line-height:1.5}.rb .none{color:#5b6b7c;font-size:.88rem}
 '@
-$nextBox = if ($Mode -eq 'Enforce') { "<div class='next'><h2>Done reviewing these settings? Continue with deeper configuration.</h2><p>Secure by Default sets the tenant-wide prerequisites. Next, use the ALSO Microsoft Security Policy Templates Navigator to choose the policy templates and configuration that fit your licenses and platforms.</p><a class='btn' href='https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' target='_blank'>Open the Navigator &rarr;</a></div>" } else { '' }
+$nextBox = if ($Mode -eq 'Enforce') { "<div class='next'><h2>Done reviewing these settings? Continue with deeper configuration.</h2><p>Secure by Default sets the security foundation. Next, use the ALSO Microsoft Security Policy Templates Navigator to choose the policy templates and configuration that fit your licenses and platforms.</p><a class='btn' href='https://coc-ms.github.io/ALSO-security-policy-templates-navigator/' target='_blank'>Open the Navigator &rarr;</a></div>" } else { '' }
 $runBox = ''
 if ($Mode -in 'Enforce', 'Wipe') {
     $verbDone = if ($Mode -eq 'Wipe') { 'Removed' } else { 'Deployed or changed' }
@@ -2899,7 +3094,7 @@ if ($Mode -in 'Enforce', 'Wipe') {
     $b4 = & $liBox 'Still to do by a person' 'Manual' $mnR { param($r) $(if ($r.Link) { " <a href='$(& $enc $r.Link)' target='_blank'>open &rarr;</a>" }) } 'No manual steps remain.'
     $runBox = "<section class='run'><h2>What happened in this run</h2><p class='intro'>This is the result of your $Mode run: what was done, what failed and why, what you left out and what still needs a person. The full details per setting are in the tabs below.</p><div class='rbs'>$b1$b2$b3$b4</div></section>"
 }
-$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked</p></header><main>$runBox<div class='cards'>$($cards -join '')</div>$tabs<div class='pane' id='auto'>$filters<p id='none' class='intro' style='display:none'>Nothing in this view.</p>$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
+$page = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>ALSO Secure by Default report</title><style>$css</style></head><body><header><h1>ALSO Secure by Default &ndash; $Mode report</h1><p>$(& $enc $org.displayName) &middot; $(Get-Date -Format 'yyyy-MM-dd HH:mm') &middot; $total settings checked$licLine</p></header><main>$runBox<div class='cards'>$($cards -join '')</div>$legend$tools$tabs<div class='pane' id='auto'>$filters<p id='none-auto' class='intro' style='display:none'>Nothing in this view.</p>$($autoSections -join '')</div><div class='pane' id='manual' style='display:none'>$manualIntro<p id='none-manual' class='intro' style='display:none'>Nothing in this view.</p>$($manualSections -join '')</div>$nextBox</main><script>$js</script></body></html>"
 [IO.File]::WriteAllText($html, $page, (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "`nSummary:" -ForegroundColor Cyan
