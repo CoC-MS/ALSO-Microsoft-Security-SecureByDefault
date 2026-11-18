@@ -1010,6 +1010,7 @@ function Step-TeamsApps {
         } $link $why $doc
     }
     catch { Add-Result 'TeamsApps' $name "Could not be read or set: $($_.Exception.Message)" 'Blocked: no third-party apps allowed' Manual $link "$manual $why" $doc }
+    Add-Result 'TeamsApps' 'Org-wide switch "Third-party apps" in Teams app settings' 'Cannot be read or set automatically (Microsoft offers no API for it)' 'Off' Manual $link 'Open Teams admin center > Teams apps > Manage apps > Actions > Org-wide app settings and turn off "Third-party apps". This switch applies to the whole organization and works together with the app permission policy that this script already sets.' $doc
 }
 
 function Step-Laps {
