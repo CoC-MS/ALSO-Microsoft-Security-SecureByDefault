@@ -1567,7 +1567,9 @@ function Step-IntunePolicies {
         Write-Host '   - android : Android phones and tablets (compliance, app protection)' -ForegroundColor DarkGray
         Write-Host '   Nothing is assigned to users or devices, so no one is affected until you assign a policy yourself. Existing policies are never changed.' -ForegroundColor DarkGray
         Write-Host '   Example: type "windows, ios" to import only those two, or press Enter to import all four.' -ForegroundColor DarkGray
-        $in = Read-Host '   Device types to import (comma separated, Enter = all)'
+        Write-Host '   Type n to skip the Intune policies completely.' -ForegroundColor DarkGray
+        $in = Read-Host '   Device types to import (comma separated, Enter = all, n = skip)'
+        if ($in -match '^\s*(n|no|skip)\s*$') { Write-Host '   Skipped: no Intune policies were imported.' -ForegroundColor DarkGray; Add-Result 'IntunePolicies' 'Intune policy baseline' 'Skipped by you' 'Imported' Skipped $null 'You chose to skip this step. Run the script again to import the policies.'; return }
         if ($in -and $in.Trim()) { $sel = @($in -split '[ ,;]+' | Where-Object { $_ } | ForEach-Object { $_.ToLower() }) }
     }
     Write-Host "   Platforms: $($sel -join ', ')" -ForegroundColor DarkGray
@@ -1738,7 +1740,7 @@ function Step-Purview {
         if ($script:SpoOk) { try { $spoT = Get-SpoTenantCsom } catch { $spoT = $null; Write-Host "  SharePoint label settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray } }
         if ($spoT) {
             & $addRow $g1 'Sensitivity labels in SharePoint and OneDrive' (& $yn ($spoT.EnableAIPIntegration -eq $true)) 'On' $(if ($spoT.EnableAIPIntegration -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets SharePoint and OneDrive read and apply sensitivity labels (and encrypt labelled files). Without it, labels do not work on files in the cloud.' $spoLink $false
-            if ($null -ne $spoT.PSObject.Properties['EnableSensitivityLabelforPDF'] -and $null -ne $spoT.EnableSensitivityLabelforPDF) {
+            if (-not $script:PdfLabelBuiltIn -and $null -ne $spoT.PSObject.Properties['EnableSensitivityLabelforPDF'] -and $null -ne $spoT.EnableSensitivityLabelforPDF) {
                 & $addRow $g1 'Sensitivity labels for PDF files' (& $yn ($spoT.EnableSensitivityLabelforPDF -eq $true)) 'On' $(if ($spoT.EnableSensitivityLabelforPDF -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets labels be applied to, and read from, PDF files in SharePoint and OneDrive.' $spoLink $false
             }
             else { & $addRow $g1 'Sensitivity labels for PDF files' 'Built in' 'On' Compliant 'Microsoft now supports labels on PDF files by default, so there is no setting to change.' $spoLink $false }
@@ -1940,7 +1942,7 @@ function Step-Purview {
                     if ($s.Setting -like '*PDF*') { Set-SpoTenantCsom 'EnableSensitivityLabelforPDF' }
                     else { Set-SpoTenantCsom 'EnableAIPIntegration' }
                 }
-                catch { Add-Result 'Purview' "Turning on: $($s.Setting)" $_.Exception.Message 'On' Error $spoLink 'SharePoint rejected the change. Turn it on in the SharePoint admin center.' $doc $docText }
+                catch { if ($s.Setting -like '*PDF*' -and $_.Exception.Message -match 'does not exist') { $script:PdfLabelBuiltIn = $true; continue }; Add-Result 'Purview' "Turning on: $($s.Setting)" $_.Exception.Message 'On' Error $spoLink 'SharePoint rejected the change. Turn it on in the SharePoint admin center.' $doc $docText }
             }
             $first = @(& $check 3>$null)
             foreach ($f in $first) { $o = $spoDrift | Where-Object { $_.Setting -eq $f.Setting }; if ($o -and $f.Status -eq 'Compliant') { $f.Status = 'Fixed'; $f.Current = $o.Current } }
