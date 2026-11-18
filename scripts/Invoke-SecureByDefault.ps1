@@ -141,10 +141,20 @@ function Wait-Worker($ps, [int]$Seconds, [string]$What) {
     $out
 }
 $script:PvCache = @{}
+$script:PvDiskLoaded = $false
+function Get-PvDiskPath { Join-Path $env:TEMP ("sbd-purview-cache-" + ("$initialDomain" -replace '[^A-Za-z0-9.-]','_') + ".xml") }
+function Clear-PvCache { $script:PvCache = @{}; $script:PvDiskLoaded = $true; try { Remove-Item (Get-PvDiskPath) -Force -ErrorAction SilentlyContinue } catch {} }
 function Invoke-Timed([string]$Code, [int]$Seconds = 60) {
+    if (-not $script:PvDiskLoaded) {
+        $script:PvDiskLoaded = $true
+        $p = Get-PvDiskPath
+        if ($Mode -eq 'Enforce' -and (Test-Path $p) -and ((Get-Date) - (Get-Item $p).LastWriteTime).TotalHours -lt 2) {
+            try { $script:PvCache = Import-Clixml $p; Write-Host '   (using the Purview data read during Discover, less than 2 hours old)' -ForegroundColor DarkGray } catch { $script:PvCache = @{} }
+        }
+    }
     if ($Code -like 'Get-*' -and $script:PvCache.ContainsKey($Code)) { return $script:PvCache[$Code] }
     $res = Invoke-TimedRaw $Code $Seconds
-    if ($Code -like 'Get-*') { $script:PvCache[$Code] = $res }
+    if ($Code -like 'Get-*') { $script:PvCache[$Code] = $res; if ($Mode -ne 'Wipe') { try { $script:PvCache | Export-Clixml (Get-PvDiskPath) -Depth 6 } catch {} } }
     $res
 }
 function Invoke-TimedRaw([string]$Code, [int]$Seconds = 60) {
@@ -639,7 +649,7 @@ function Step-Consent {
     $w = Graph GET $wUri
     $revCount = @($w.reviewers).Count
     $wfOn = ($w.isEnabled -eq $true) -and $revCount -gt 0
-    $wfNow = if ($wfOn) { "Yes ($revCount reviewer(s))" } elseif ($w.isEnabled -eq $true) { 'No (switched on but has no reviewers)' } else { 'No' }
+    $wfNow = if ($wfOn) { 'Yes' } elseif ($w.isEnabled -eq $true) { 'No (switched on but has no reviewers)' } else { 'No' }
     $wfWhy = 'The admin consent workflow lets users ask an administrator to approve an app they cannot consent to themselves, instead of being stuck or looking for a workaround. It needs at least one reviewer. You choose who the reviewers are.'
     Compare-Setting 'Consent' 'Admin consent request workflow enabled' $wfNow 'Yes' {
         $revIds = @(Select-Reviewers)
@@ -2004,7 +2014,7 @@ function Step-Purview {
                 }
                 $deployed = $true
                 Write-Host '   Reading the tenant again to verify the result...' -ForegroundColor Cyan
-                $script:PvCache = @{}
+                Clear-PvCache
                 $final = @(& $check 3>$null)
             }
         }
