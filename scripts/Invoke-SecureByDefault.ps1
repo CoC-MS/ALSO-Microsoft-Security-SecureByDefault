@@ -25,9 +25,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet('Discover', 'Enforce', 'Wipe')][string]$Mode = 'Discover',
-    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+    [ValidateSet('Licensing', 'AuditLog', 'SecurityDefaults', 'UserSettings', 'Consent', 'Copilot', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'Purview', 'GuideManual')]
-    [string[]]$Steps = @('Licensing', 'SecurityDefaults', 'UserSettings', 'Consent', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
+    [string[]]$Steps = @('Licensing', 'SecurityDefaults', 'UserSettings', 'Consent', 'Copilot', 'BreakGlass', 'ConditionalAccess', 'PrivilegedAccess', 'Fido2', 'AuthMethods', 'SharePoint',
         'IntuneEnrollment', 'Laps', 'IntunePolicies', 'MdoPresets', 'EmailAuth', 'DefenderEndpoint', 'DefenderGuidance', 'AuditLog', 'Purview', 'GuideManual'),
     [string]$SharePointAdminUrl,
     [string]$OutputPath = (Join-Path (Get-Location) 'sbd-reports'),
@@ -948,6 +948,42 @@ function Set-DeviceRegPolicy([scriptblock]$Edit) {
     foreach ($k in @($cur.Keys | Where-Object { $_ -like '@odata.*' })) { $cur.Remove($k) }
     & $Edit $cur
     Graph PUT $uri $cur | Out-Null
+}
+
+function Step-Copilot {
+    Write-Step 'Microsoft 365 Copilot access' 'Stop users buying Copilot trials themselves and make sure Copilot is not given to everyone by default.'
+    $licLink = 'https://admin.microsoft.com/#/subscriptions'
+    $skus = @(Get-AllPages 'https://graph.microsoft.com/v1.0/subscribedSkus')
+    $cop = @($skus | Where-Object { "$($_.skuPartNumber)" -match 'Copilot' -and "$($_.skuPartNumber)" -notmatch 'Studio|Security|Teams' })
+    $copWhy = 'Microsoft 365 Copilot only works for users who hold a Copilot license. Check that licenses are assigned to named users or a pilot group (not to all users, and not through a group that contains everyone), so Copilot is off for everyone else by default.'
+    if (-not $cop.Count) { Add-Result 'Copilot' 'Microsoft 365 Copilot licenses assigned to all users' 'No Copilot licenses in this tenant, so no user has Copilot' 'Only chosen users or a pilot group' Compliant $licLink $copWhy }
+    else {
+        $total = 0; try { $total = [int](($skus | Where-Object { "$($_.skuPartNumber)" -match 'ENTERPRISEPACK|SPE_E3|SPE_E5|O365_BUSINESS|SPB|STANDARDPACK|ENTERPRISEPREMIUM' } | ForEach-Object { [int]$_.consumedUnits } | Measure-Object -Maximum).Maximum) } catch { }
+        $used = ($cop | Measure-Object -Property consumedUnits -Sum).Sum
+        $now = "$used Copilot license(s) assigned" + $(if ($total) { " (about $total users hold a base Microsoft 365 license)" } else { '' })
+        $st = if ($total -and $used -ge $total) { 'Drift' } else { 'Info' }
+        Add-Result 'Copilot' 'Microsoft 365 Copilot licenses assigned to all users' $now 'Only chosen users or a pilot group' $st $licLink $copWhy
+    }
+    $why = 'By default any user can start a free Copilot trial or buy Copilot with a card. That creates licenses and costs you do not control and puts Copilot in front of people before you have prepared your data. Turning self-service purchase off for Copilot makes licensing an admin decision.'
+    $doc = 'https://learn.microsoft.com/en-us/microsoft-365/commerce/subscriptions/manage-self-service-purchases-admins'
+    $link = 'https://admin.microsoft.com/#/Settings/SelfServicePurchase'
+    try {
+        Initialize-Module MSCommerce
+        if (-not $script:McConnected) {
+            Write-Host '   Signing in to Microsoft Commerce (a browser window opens; sign in as a Global Administrator)...' -ForegroundColor Cyan
+            Connect-MSCommerce | Out-Null; $script:McConnected = $true
+        }
+        $pid1 = 'CFQ7TTC0MM8R'
+        $p = Get-MSCommerceProductPolicies -PolicyId AllowSelfServicePurchase | Where-Object { $_.ProductID -eq $pid1 } | Select-Object -First 1
+        if (-not $p) { Add-Result 'Copilot' 'Users can buy or start trials of Microsoft 365 Copilot themselves' 'Product not found in this tenant' 'No' Manual $link $why $doc; return }
+        $cur = if ("$($p.PolicyValue)" -eq 'Disabled') { 'No' } else { 'Yes' }
+        Compare-Setting 'Copilot' 'Users can buy or start trials of Microsoft 365 Copilot themselves' $cur 'No' {
+            Update-MSCommerceProductPolicy -PolicyId AllowSelfServicePurchase -ProductId $pid1 -Value 'Disabled' | Out-Null
+            $chk = Get-MSCommerceProductPolicies -PolicyId AllowSelfServicePurchase | Where-Object { $_.ProductID -eq $pid1 } | Select-Object -First 1
+            if ("$($chk.PolicyValue)" -ne 'Disabled') { throw 'Microsoft accepted the request but self-service purchase is still on. Turn it off in the Microsoft 365 admin center: Settings > Org settings > Self-service trials and purchases > Microsoft 365 Copilot > Do not allow.' }
+        } $link $why $doc
+    }
+    catch { Add-Result 'Copilot' 'Users can buy or start trials of Microsoft 365 Copilot themselves' "Could not be read or set: $($_.Exception.Message)" 'No' Manual $link "Turn it off in the Microsoft 365 admin center: Settings > Org settings > Self-service trials and purchases > Microsoft 365 Copilot > Do not allow. $why" $doc }
 }
 
 function Step-Laps {
@@ -2277,7 +2313,7 @@ $cats = [ordered]@{
     SecurityDefaults = 'Identity: users & external collaboration'; UserSettings = 'Identity: users & external collaboration'; Consent = 'Identity: app consent'
     BreakGlass = 'Identity: emergency access'; Fido2 = 'Authentication'; AuthMethods = 'Authentication'
     SharePoint = 'Collaboration: SharePoint & OneDrive'; IntuneEnrollment = 'Devices: Intune & LAPS'; Laps = 'Devices: Intune & LAPS'
-    MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
+    Copilot = 'Microsoft 365 Copilot'; MdoPresets = 'Defender'; EmailAuth = 'Email authentication (SPF, DKIM, DMARC)'; DefenderEndpoint = 'Defender'; DefenderGuidance = 'Defender'
     ConditionalAccess = 'Identity: Conditional Access & admin roles'; PrivilegedAccess = 'Identity: Conditional Access & admin roles'
     IntunePolicies = 'Devices: Intune policy baseline'; TenantSettings = 'Tenant-wide settings (Wipe)'; AuditLog = 'Data: Microsoft Purview'; Purview = 'Data: Microsoft Purview'; GuideManual = 'Other guide steps'
 }
