@@ -216,7 +216,7 @@ $graphScopes = if ($Mode -eq 'Wipe') {
     'Policy.ReadWrite.ConditionalAccess', 'Policy.Read.All', 'Application.Read.All', 'Group.ReadWrite.All', 'User.ReadWrite.All',
     'AdministrativeUnit.ReadWrite.All', 'Directory.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'Organization.Read.All', 'DeviceManagementConfiguration.ReadWrite.All',
     'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.ConsentRequest', 'Policy.ReadWrite.PermissionGrant', 'Policy.ReadWrite.DeviceConfiguration', 'Policy.ReadWrite.MobilityManagement', 'SharePointTenantSettings.ReadWrite.All',
-    'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All'
+    'DeviceManagementApps.ReadWrite.All', 'DeviceManagementServiceConfig.ReadWrite.All', 'LifecycleWorkflows.ReadWrite.All'
 }
 elseif ($Mode -eq 'Enforce') {
     'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.AuthenticationMethod', 'Policy.ReadWrite.ConsentRequest',
@@ -2292,6 +2292,57 @@ function Step-WipeTenantSettings {
         if ($dr.azureADJoin.localAdmins.enableGlobalAdmins -eq $false) { & $add 'Laps' 'Global administrators become local admin on joined devices: from No to Yes (Microsoft default)' { Set-DeviceRegPolicy { param($x) $x.azureADJoin.localAdmins.enableGlobalAdmins = $true } } }
     }
     catch { }
+    try {
+        $dr2 = Graph GET 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy'
+        if ("$($dr2.azureADJoin.localAdmins.registeringUsers.'@odata.type')" -eq '#microsoft.graph.noDeviceRegistrationMembership') { & $add 'Laps' 'Registering user is added as local administrator on join: from None to All registering users (Microsoft default)' { Set-DeviceRegPolicy { param($x) $x.azureADJoin.localAdmins.registeringUsers = @{ '@odata.type' = '#microsoft.graph.allDeviceRegistrationMembership' } } } }
+    }
+    catch { }
+    try {
+        $ecUri = 'https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations'
+        $def = @(Get-AllPages $ecUri | Where-Object { "$($_.'@odata.type')" -match 'platformRestrictionsConfiguration$' -and "$($_.id)" -match 'DefaultPlatformRestrictions' }) | Select-Object -First 1
+        if ($def) {
+            $blockedNow = @(@('windowsRestriction', 'iosRestriction', 'androidRestriction', 'androidForWorkRestriction', 'macOSRestriction') | Where-Object { $r = $def[$_]; $r -and $r['personalDeviceEnrollmentBlocked'] -eq $true })
+            if ($blockedNow.Count) {
+                & $add 'IntuneEnrollment' 'Personally owned devices blocked from enrolling: back to allowed (Microsoft default)' {
+                    $body = @{ '@odata.type' = "$($def.'@odata.type')" }
+                    foreach ($p in $blockedNow) { $r = [ordered]@{}; $src = $def[$p]; foreach ($kk in @($src.Keys)) { $r[$kk] = $src[$kk] }; $r['personalDeviceEnrollmentBlocked'] = $false; $body[$p] = $r }
+                    Graph PATCH "$ecUri/$($def.id)" $body | Out-Null
+                }
+            }
+        }
+    }
+    catch { }
+    try {
+        $gSp = @(Get-AllPages 'https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq ''00000003-0000-0000-c000-000000000000''&$select=id') | Select-Object -First 1
+        $clsUri = "https://graph.microsoft.com/v1.0/servicePrincipals/$($gSp.id)/delegatedPermissionClassifications"
+        $lowNow = @(Get-AllPages $clsUri | Where-Object { $_.classification -eq 'low' -and "$($_.permissionName)" -in 'profile', 'openid', 'offline_access', 'User.Read', 'email' })
+        if ($lowNow.Count) { & $add 'Consent' "Low-impact permissions list (profile, openid, offline_access, User.Read, email): remove the $($lowNow.Count) entries on the list (Microsoft default is an empty list)" { foreach ($c in $lowNow) { Graph DELETE "$clsUri/$($c.id)" | Out-Null } } }
+    }
+    catch { }
+    try {
+        $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
+        $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
+        if ($pol -and $pol.isEnabled -eq $true) { & $add 'Consent' 'Default Agent Identity inactivity lifecycle policy: from enabled to disabled' { Graph PATCH "$lpUri/$($pol.id)" @{ '@odata.type' = "$($pol.'@odata.type')"; isEnabled = $false } | Out-Null } }
+    }
+    catch { }
+    if ('Copilot' -in $Steps) {
+        try {
+            Initialize-Module MSCommerce
+            if (-not $script:McConnected) { Write-Host '   Signing in to Microsoft Commerce (a browser window opens; sign in as a Global Administrator)...' -ForegroundColor Cyan; Connect-MSCommerce | Out-Null; $script:McConnected = $true }
+            $cp = Get-MSCommerceProductPolicies -PolicyId AllowSelfServicePurchase | Where-Object { $_.ProductID -eq 'CFQ7TTC0MM8R' } | Select-Object -First 1
+            if ($cp -and "$($cp.PolicyValue)" -eq 'Disabled') { & $add 'Copilot' 'Users can buy or start trials of Microsoft 365 Copilot themselves: from No to Yes (Microsoft default)' { Update-MSCommerceProductPolicy -PolicyId AllowSelfServicePurchase -ProductId 'CFQ7TTC0MM8R' -Value 'Enabled' | Out-Null } }
+        }
+        catch { Write-Host "   Copilot self-service purchase setting could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
+    }
+    if ('TeamsApps' -in $Steps) {
+        try {
+            Initialize-Module MicrosoftTeams
+            if (-not $script:TeamsConnected) { Write-Host '   Signing in to Microsoft Teams (a browser window opens; sign in as a Global Administrator)...' -ForegroundColor Cyan; Connect-MicrosoftTeams | Out-Null; $script:TeamsConnected = $true }
+            $tp = Get-CsTeamsAppPermissionPolicy -Identity Global -ErrorAction Stop
+            if ("$($tp.GlobalCatalogAppsType)" -eq 'AllowedAppList' -and @($tp.GlobalCatalogApps).Count -eq 0) { & $add 'TeamsApps' 'Third-party apps in Teams (default app permission policy): from blocked to all allowed (Microsoft default)' { Set-CsTeamsAppPermissionPolicy -Identity Global -GlobalCatalogAppsType BlockedAppList -GlobalCatalogApps @() -ErrorAction Stop | Out-Null } }
+        }
+        catch { Write-Host "   Teams app permission policy could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray }
+    }
     Remove-Items 'TenantSettings' 'tenant-wide settings' $items { param($x) $x.Name } { param($x) & $x.Do } 'https://entra.microsoft.com' 'These settings were changed by Enforce mode. Setting them back returns the Microsoft default, which is usually less strict. Choose one by one if you only want to undo some of them.'
 }
 function Invoke-Wipe {
@@ -2315,7 +2366,7 @@ function Invoke-Wipe {
         if ($s -eq 'TenantSettings' -or $s -in $Steps) { Invoke-Safe $s { & "Step-Wipe$s" } }
     }
     Write-Step 'Settings that are left as they are' 'Wipe never switches these off.'
-    Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults and the other authentication methods stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
+    Add-Result 'GuideManual' 'Settings Wipe leaves unchanged' 'Not reverted' 'Left on purpose' Manual 'https://entra.microsoft.com' 'The unified audit log, passkey (FIDO2) sign-in, security defaults, the other authentication methods, the Defender settings and the Exchange Online protection presets stay as they are, because turning them off weakens the tenant and Microsoft keeps them available by default. Change them in the portal if you really want them off.'
 }
 
 $basicSkip = 'IntuneEnrollment', 'IntunePolicies', 'ConditionalAccess', 'MdoPresets', 'DefenderEndpoint', 'DefenderGuidance'
