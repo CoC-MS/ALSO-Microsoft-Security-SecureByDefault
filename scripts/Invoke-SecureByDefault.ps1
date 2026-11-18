@@ -207,12 +207,12 @@ elseif ($Mode -eq 'Enforce') {
     'AdministrativeUnit.ReadWrite.All', 'RoleManagement.ReadWrite.Directory', 'DeviceManagementServiceConfig.ReadWrite.All',
     'DeviceManagementConfiguration.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All',
     'SharePointTenantSettings.ReadWrite.All', 'Policy.Read.All', 'Policy.ReadWrite.ConditionalAccess',
-    'DeviceManagementApps.ReadWrite.All', 'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement'
+    'DeviceManagementApps.ReadWrite.All',     'Application.Read.All', 'AccessReview.Read.All', 'Policy.ReadWrite.MobilityManagement', 'LifecycleWorkflows.ReadWrite.All'
 }
 else {
     'Policy.Read.All', 'User.Read.All', 'Group.Read.All', 'AdministrativeUnit.Read.All', 'RoleManagement.Read.Directory',
     'DeviceManagementServiceConfig.Read.All',     'DeviceManagementConfiguration.Read.All', 'Directory.Read.All', 'Organization.Read.All',
-        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All', 'Application.Read.All', 'AccessReview.Read.All'
+        'SharePointTenantSettings.Read.All', 'DeviceManagementApps.Read.All',         'Application.Read.All', 'AccessReview.Read.All', 'LifecycleWorkflows.Read.All'
     }
     Write-Host "ALSO Secure by Default - mode: $Mode" -ForegroundColor Cyan
 if ($Mode -eq 'Discover') { Write-Host "Read-only discovery. Nothing will be changed." -ForegroundColor Green }
@@ -644,6 +644,17 @@ function Step-Consent {
         $chk = Graph GET $wUri
         if (-not ($chk.isEnabled -eq $true -and @($chk.reviewers).Count -gt 0)) { throw 'Microsoft accepted the request but the workflow is still off. Turn it on in the Entra admin center: Enterprise apps > Consent and permissions > Admin consent settings.' }
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/AdminConsentSettings' $wfWhy
+    Invoke-Part 'UserSettings' 'Agent identity inactivity policy' {
+        $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
+        $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
+        if (-not $pol) { Add-Result 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' 'Policy not found in this tenant' 'Enabled' Manual 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' 'Turn it on under ID Governance > Lifecycle workflows > Lifecycle policies > Agent ID.' 'https://learn.microsoft.com/en-us/entra/id-governance/agent-default-inactivity-policy'; return }
+        $agWhy = 'Agent identities that nobody uses anymore keep their access and become easy targets. The default policy notifies owners and sponsors after 60 days of inactivity, disables the agent after 90 days and deletes it after 455 days. It needs no extra license.'
+        $agNow = if ($pol.isEnabled -eq $true) { 'Enabled' } else { 'Disabled' }
+        Compare-Setting 'UserSettings' 'Default Agent Identity inactivity lifecycle policy enabled' $agNow 'Enabled' {
+            Graph PATCH "$lpUri/$($pol.id)" @{ '@odata.type' = "$($pol.'@odata.type')"; isEnabled = $true } | Out-Null
+            if ((Graph GET "$lpUri/$($pol.id)").isEnabled -ne $true) { throw 'Microsoft accepted the request but the policy is still disabled. Turn it on under ID Governance > Lifecycle workflows > Lifecycle policies > Agent ID.' }
+        } 'https://entra.microsoft.com/#view/Microsoft_AAD_ERM/DashboardBlade/~/LifecycleWorkflows' $agWhy
+    }
 }
 
 function Step-BreakGlass {
