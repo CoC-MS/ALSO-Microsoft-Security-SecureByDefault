@@ -1738,7 +1738,7 @@ function Step-Purview {
         if ($script:SpoOk) { try { $spoT = Get-SpoTenantCsom } catch { $spoT = $null; Write-Host "  SharePoint label settings could not be read: $($_.Exception.Message)" -ForegroundColor DarkGray } }
         if ($spoT) {
             & $addRow $g1 'Sensitivity labels in SharePoint and OneDrive' (& $yn ($spoT.EnableAIPIntegration -eq $true)) 'On' $(if ($spoT.EnableAIPIntegration -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets SharePoint and OneDrive read and apply sensitivity labels (and encrypt labelled files). Without it, labels do not work on files in the cloud.' $spoLink $false
-            if ($spoT.PSObject.Properties['EnableSensitivityLabelforPDF']) {
+            if ($null -ne $spoT.PSObject.Properties['EnableSensitivityLabelforPDF'] -and $null -ne $spoT.EnableSensitivityLabelforPDF) {
                 & $addRow $g1 'Sensitivity labels for PDF files' (& $yn ($spoT.EnableSensitivityLabelforPDF -eq $true)) 'On' $(if ($spoT.EnableSensitivityLabelforPDF -eq $true) { 'Compliant' } else { 'Drift' }) 'Lets labels be applied to, and read from, PDF files in SharePoint and OneDrive.' $spoLink $false
             }
             else { & $addRow $g1 'Sensitivity labels for PDF files' 'Built in' 'On' Compliant 'Microsoft now supports labels on PDF files by default, so there is no setting to change.' $spoLink $false }
@@ -1979,7 +1979,7 @@ function Step-Purview {
                 $run = {
                     param($Name, $Body)
                     $sw = [Diagnostics.Stopwatch]::StartNew()
-                    $global:ErrorActionPreference = $prevEap
+                    $origEap = $global:ErrorActionPreference; $global:ErrorActionPreference = 'Continue'
                     try {
                         $err = @()
                         & $Body 2>&1 3>$null | ForEach-Object { if ($_ -is [Management.Automation.ErrorRecord]) { $err += $_.Exception.Message; Write-Host "      ! $($_.Exception.Message)" -ForegroundColor Yellow } else { $_ } }
@@ -1988,6 +1988,7 @@ function Step-Purview {
                         $true
                     }
                     catch { Add-Result 'Purview' "Deploying: $Name" $_.Exception.Message 'Deployed' Error $repo 'The ALSO Purview toolkit stopped with this error. The script continues with the next part. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText; $false }
+                    finally { $global:ErrorActionPreference = $origEap }
                 }
                 if ($go) {
                     if ($partKeys -contains 'labels') {
