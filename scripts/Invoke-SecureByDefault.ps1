@@ -1690,7 +1690,7 @@ function Step-Purview {
     $yn = { param($v) if ($v) { 'On' } else { 'Off' } }
     $isTrue = { param($v) "$v" -match '^(true|1|yes)$' }
 
-    try { $tk = Get-PurviewToolkit 3>$null; $cfgPath = Join-Path $tk 'Purview\Config\PurviewConfig.psd1'; $config = Import-PowerShellDataFile $cfgPath }
+    try { $tk = Get-PurviewToolkit 3>$null; $cfgPath = Join-Path $tk 'Purview\Config\PurviewConfig.psd1'; $config = Import-PowerShellDataFile $cfgPath; $config.SitDlpPolicies = @($config.SitDlpPolicies | Where-Object { $_.Name -notmatch 'Swiss|DACH' }) }
     catch { Add-Result 'Purview' 'ALSO Purview baseline configuration' "Could not be downloaded: $($_.Exception.Message)" 'Downloaded from GitHub' Error $repo 'The script compares your tenant with the baseline file in ALSO''s Purview repository. Check your internet connection and that github.com is reachable.' $doc $docText; return }
     if (-not (Get-Command Get-Label -ErrorAction SilentlyContinue)) {
         Add-Result 'Purview' 'Purview connection' 'Signed in, but the Purview commands are not available' 'Commands such as Get-Label are available' Error 'https://purview.microsoft.com' 'The sign-in worked, but the Security & Compliance commands did not load. Close PowerShell, open a new PowerShell 7 window as administrator, and run the script again. If it persists, update the ExchangeOnlineManagement module (Update-Module ExchangeOnlineManagement).' $doc $docText
