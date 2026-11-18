@@ -1200,12 +1200,15 @@ function Find-GroupByName([string]$Name) {
 function Get-GuidePackage([string]$Name) {
     $root = Join-Path ([IO.Path]::GetTempPath()) 'sbd-packages'
     $dir = Join-Path $root $Name
-    if (-not (Test-Path $dir)) {
+    if (-not (Test-Path $dir) -or -not (Get-ChildItem $dir -Recurse -Filter *.json -ErrorAction SilentlyContinue | Select-Object -First 1)) {
         New-Item -ItemType Directory -Force $root | Out-Null
+        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
         $zip = Join-Path $root "$Name.zip"
         Invoke-WebRequest -Uri "${GuideBase}downloads/$Name.zip" -OutFile $zip -UseBasicParsing
         Expand-Archive $zip -DestinationPath $dir -Force
     }
+    $n = @(Get-ChildItem $dir -Recurse -Filter *.json -ErrorAction SilentlyContinue).Count
+    if (-not $n) { Write-Host "   Warning: the $Name package at $dir contains no policy files." -ForegroundColor Yellow }
     $dir
 }
 
