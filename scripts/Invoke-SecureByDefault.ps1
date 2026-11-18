@@ -644,6 +644,7 @@ function Step-Consent {
         $chk = Graph GET $wUri
         if (-not ($chk.isEnabled -eq $true -and @($chk.reviewers).Count -gt 0)) { throw 'Microsoft accepted the request but the workflow is still off. Turn it on in the Entra admin center: Enterprise apps > Consent and permissions > Admin consent settings.' }
     } 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/AdminConsentSettings' $wfWhy
+    Add-Result 'UserSettings' 'Agents and plugins user access (Microsoft 365 admin center)' 'Cannot be read or set automatically (Microsoft offers no API for it)' 'No users' Manual 'https://admin.microsoft.com/#/agents/settings' 'Open Agents > Settings > User access and choose "No users" until your organization has decided who may use agents and plugins. Then switch to "Specific users or groups" for a pilot group.' 'https://learn.microsoft.com/en-us/microsoft-agent-365/admin/agent-settings'
     Invoke-Part 'UserSettings' 'Agent identity inactivity policy' {
         $lpUri = 'https://graph.microsoft.com/beta/identityGovernance/lifecycleWorkflows/lifecyclePolicies'
         $pol = @(Get-AllPages $lpUri | Where-Object { "$($_.displayName)" -eq 'Default Agent Identity Inactivity Lifecycle Policy' }) | Select-Object -First 1
