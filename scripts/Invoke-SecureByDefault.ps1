@@ -1992,7 +1992,7 @@ function Step-Purview {
                 if ($doRet) { $dArgs += '-ApplyRetention' }
                 if ($adopt) { $dArgs += '-AdoptExisting' }
                 if ($tier -ne 'Full') { $dArgs += '-BPOnly' }
-                Write-Host '   Running ALSO''s original Purview deployment script with exactly your selection. It signs in to Exchange, Purview and SharePoint itself, and label changes can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
+                Write-Host '   Deploying your Purview selection. You may be asked to sign in to Exchange, Purview and SharePoint, and label changes can take 5 to 15 minutes. The script is not stuck, please wait.' -ForegroundColor Cyan
                 try {
                     & ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) @dArgs
                     if ($LASTEXITCODE -ne 0) { Add-Result 'Purview' 'Deploying the Purview baseline' "ALSO's Purview script stopped (exit code $LASTEXITCODE)" 'Deployed' Error $repo 'See the console output above for the reason. Run the script again after fixing the cause; completed parts are not repeated.' $doc $docText }
