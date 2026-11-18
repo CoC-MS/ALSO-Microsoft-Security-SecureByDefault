@@ -2343,9 +2343,13 @@ function Step-WipeAuthContexts {
     }
     Remove-Items 'ConditionalAccess' 'ALSO authentication contexts' $ctx { param($x) $x.Name } {
         param($x)
-        try { Graph DELETE $x.Uri | Out-Null }
+        try {
+            try { Graph PATCH $x.Uri @{ isAvailable = $false } | Out-Null } catch { }
+            Graph DELETE $x.Uri | Out-Null
+        }
         catch {
             if ("$($_.Exception.Message)" -match 'referenced by one or more policies|3001') { throw 'Still in use: a Conditional Access policy or a privileged role setting (for example Azure roles in Privileged Identity Management, which Wipe leaves unchanged) still refers to it. Remove that reference in the portal, then run Wipe again.' }
+            if ("$($_.Exception.Message)" -match 'publish to apps|3003') { throw 'Still published to apps: an app still uses this authentication context. Stop using it there, then run Wipe again.' }
             throw
         }
     } $link 'An authentication context cannot be removed while a Conditional Access policy or a Privileged Identity Management role setting still uses it.'
