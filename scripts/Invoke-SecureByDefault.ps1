@@ -928,11 +928,12 @@ function Step-IntuneEnrollment {
         $def = @(Get-AllPages $ecUri | Where-Object { "$($_.'@odata.type')" -match 'platformRestrictionsConfiguration$' -and "$($_.id)" -match 'DefaultPlatformRestrictions' }) | Select-Object -First 1
         $rLink = 'https://intune.microsoft.com/#view/Microsoft_Intune_Enrollment/EnrollmentRestrictionsMenuBlade/~/platformRestrictions'
         if (-not $def) { Add-Result 'IntuneEnrollment' 'Personally owned devices blocked from enrolling' 'Default restriction not found' 'Blocked' Manual $rLink 'In Intune open Devices > Enrollment > Enrollment restrictions > Device type restrictions and block personally owned devices.'; return }
-        $props = 'windowsRestriction', 'windowsHomeSkuRestriction', 'iosRestriction', 'androidRestriction', 'androidForWorkRestriction', 'macOSRestriction', 'macOSRestriction'
-        $open = @($props | Select-Object -Unique | Where-Object { $r = $def[$_]; $r -and $r['platformBlocked'] -ne $true -and $r['personalDeviceEnrollmentBlocked'] -ne $true })
-        $now = if ($open.Count) { 'Personally owned devices can enroll' } else { 'Personally owned devices are blocked' }
+        $names = @{ windowsRestriction = 'Windows'; iosRestriction = 'iOS/iPadOS'; androidRestriction = 'Android device administrator'; androidForWorkRestriction = 'Android Enterprise (work profile)'; macOSRestriction = 'macOS' }
+        $props = @($names.Keys)
+        $open = @($props | Where-Object { $r = $def[$_]; $r -and $r['platformBlocked'] -ne $true -and $r['personalDeviceEnrollmentBlocked'] -ne $true })
+        $now = if ($open.Count) { 'Personally owned devices can enroll: ' + (($open | ForEach-Object { $names[$_] } | Sort-Object) -join ', ') } else { 'Personally owned devices are blocked on every platform' }
         $why = 'Personally owned devices are not managed or trusted by your organization. Blocking them from enrolling means only company devices are enrolled and get your policies. Users can still use apps through app protection policies.'
-        Compare-Setting 'IntuneEnrollment' 'Personally owned devices blocked from enrolling (default restriction)' $now 'Personally owned devices are blocked' {
+        Compare-Setting 'IntuneEnrollment' 'Personally owned devices blocked from enrolling (default restriction)' $now 'Personally owned devices are blocked on every platform' {
             $body = @{ '@odata.type' = "$($def.'@odata.type')" }
             foreach ($p in $open) { $r = [ordered]@{}; $src = $def[$p]; foreach ($kk in @($src.Keys)) { $r[$kk] = $src[$kk] }; $r['personalDeviceEnrollmentBlocked'] = $true; $body[$p] = $r }
             Graph PATCH "$ecUri/$($def.id)" $body | Out-Null
